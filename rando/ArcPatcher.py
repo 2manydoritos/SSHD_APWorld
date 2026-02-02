@@ -1,0 +1,135 @@
+"""
+Logo patching for Archipelago SSHD patches.
+
+This module handles patching the title screen and credits logos
+to show Archipelago branding instead of the original randomizer logo.
+"""
+
+from pathlib import Path
+
+
+def patch_archipelago_logo(romfs_output_path: Path, assets_path: Path, title2d_source: Path, endroll_source: Path):
+    """
+    Patch the title screen and credits to show the Archipelago logo.
+    
+    Args:
+        romfs_output_path: The output path for romfs files (e.g., temp_dir/romfs)
+        assets_path: Path to the assets folder containing TPL files
+        title2d_source: Path to the source Title2D.arc file
+        endroll_source: Path to the source EndRoll.arc file
+    """
+    # Import sslib here so __init__.py has already added sshd-rando-backend to sys.path
+    try:
+        from sslib.u8file import U8File
+        from sslib.utils import write_bytes_create_dirs
+    except ImportError as e:
+        print(f"Warning: sshd-rando not available, skipping logo patch (import error: {e})")
+        return
+        
+    # Load custom Archipelago logo TPL files
+    # Try multiple methods to handle both ZIP (Archipelago) and filesystem (dev) modes
+    import pkgutil
+    import importlib.resources
+    
+    logo_data = None
+    rogo_03_data = None
+    rogo_04_data = None
+    
+    # Try method 1: importlib.resources (best for ZIP files, Python 3.9+)
+    try:
+        if hasattr(importlib.resources, 'files'):
+            assets = importlib.resources.files('worlds.sshd').joinpath('assets')
+            logo_data = assets.joinpath('archipelago-logo.tpl').read_bytes()
+            rogo_03_data = assets.joinpath('archipelago-rogo_03.tpl').read_bytes()
+            rogo_04_data = assets.joinpath('archipelago-rogo_04.tpl').read_bytes()
+            print("[ArcPatcher] Successfully loaded logo files from ZIP package")
+    except Exception as e:
+        print(f"[ArcPatcher] importlib.resources method failed: {e}")
+        
+    # Try method 2: pkgutil.get_data (fallback for older Python)
+    if logo_data is None:
+        try:
+            logo_data = pkgutil.get_data("worlds.sshd.assets", "archipelago-logo.tpl")
+            rogo_03_data = pkgutil.get_data("worlds.sshd.assets", "archipelago-rogo_03.tpl")
+            rogo_04_data = pkgutil.get_data("worlds.sshd.assets", "archipelago-rogo_04.tpl")
+            
+            if all([logo_data, rogo_03_data, rogo_04_data]):
+                print("[ArcPatcher] Successfully loaded logo files via pkgutil")
+            else:
+                logo_data = None
+        except Exception as e:
+            print(f"[ArcPatcher] pkgutil method failed: {e}")
+                
+    # Try method 3: filesystem (for development environment)
+    if logo_data is None:
+        try:
+            logo_tpl = assets_path / "archipelago-logo.tpl"
+            rogo_03_tpl = assets_path / "archipelago-rogo_03.tpl"
+            rogo_04_tpl = assets_path / "archipelago-rogo_04.tpl"
+            
+            print(f"[ArcPatcher] Trying filesystem method from: {assets_path}")
+            
+            if all(f.exists() for f in [logo_tpl, rogo_03_tpl, rogo_04_tpl]):
+                logo_data = logo_tpl.read_bytes()
+                rogo_03_data = rogo_03_tpl.read_bytes()
+                rogo_04_data = rogo_04_tpl.read_bytes()
+                print("[ArcPatcher] Successfully loaded logo files from filesystem")
+            else:
+                print(f"[ArcPatcher] Logo files not found in: {assets_path}")
+        except Exception as e:
+            print(f"[ArcPatcher] Filesystem method failed: {e}")
+    
+    # If we still don't have the logos, skip with a warning
+    if not all([logo_data, rogo_03_data, rogo_04_data]):
+        print("Warning: Custom Archipelago logo TPL files could not be loaded")
+        print("  Using sshd-rando logos instead (already patched by sshd-rando)")
+        return
+    
+    # Patch title screen logo
+    if title2d_source.exists():
+        print("Patching Title Screen Logo with Archipelago branding...")
+        title_2d_arc = U8File.get_parsed_U8_from_path(title2d_source)
+        title_2d_arc.set_file_data("timg/tr_wiiKing2Logo_00.tpl", logo_data)
+        title_2d_arc.set_file_data("timg/th_rogo_03.tpl", rogo_03_data)
+        title_2d_arc.set_file_data("timg/th_rogo_04.tpl", rogo_04_data)
+        
+        # Fix size of rogo stuff (makes the logo text shiny)
+        if lyt_file := title_2d_arc.get_file_data("blyt/titleBG_00.brlyt"):
+            # Changes the size of the P_loop_00, P_auraR_03, and P_auraR_00 lyt elements
+            lyt_file = lyt_file.replace(
+                b"\x43\xa4\xc0\x00\x43\x37", b"\x43\xa4\xc0\x00\x43\x69"
+            )
+            title_2d_arc.set_file_data("blyt/titleBG_00.brlyt", lyt_file)
+        
+        layout_output = romfs_output_path / "Layout"
+        write_bytes_create_dirs(
+            layout_output / "Title2D.arc", title_2d_arc.build_U8()
+        )
+        print(f"  ✓ Title screen logo patched: {layout_output / 'Title2D.arc'}")
+    else:
+        print(f"Warning: Title2D source not found at {title2d_source}")
+    
+    # Patch credits logo
+    if endroll_source.exists():
+        print("Patching Credits Logo with Archipelago branding...")
+        endroll_arc = U8File.get_parsed_U8_from_path(endroll_source)
+        endroll_arc.set_file_data("timg/th_zeldaRogoEnd_02.tpl", logo_data)
+        endroll_arc.set_file_data("timg/th_rogo_03.tpl", rogo_03_data)
+        endroll_arc.set_file_data("timg/th_rogo_04.tpl", rogo_04_data)
+        
+        # Fix size of rogo stuff (makes the logo text shiny)
+        if lyt_file := endroll_arc.get_file_data("blyt/endTitle_00.brlyt"):
+            # Changes the size of the P_loop_00, and P_auraR_00 lyt elements
+            lyt_file = lyt_file.replace(
+                b"\x9a\x40\x49\x99\x9a\x43\x13\x80\x00\x42\xa2",
+                b"\x99\x40\x49\x99\x99\x43\x13\x80\x00\x42\xce",
+            )
+            endroll_arc.set_file_data("blyt/endTitle_00.brlyt", lyt_file)
+        
+        layout_output = romfs_output_path / "Layout"
+        write_bytes_create_dirs(
+            layout_output / "EndRoll.arc", endroll_arc.build_U8()
+        )
+        print(f"  ✓ Credits logo patched: {layout_output / 'EndRoll.arc'}")
+    else:
+        print(f"Warning: EndRoll source not found at {endroll_source}")

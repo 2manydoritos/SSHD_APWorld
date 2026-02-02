@@ -1,0 +1,126 @@
+# Skyward Sword HD - Archipelago APWorld
+
+An [Archipelago](https://archipelago.gg) multiworld randomizer integration for **The Legend of Zelda: Skyward Sword HD**.
+
+## What is this?
+
+This APWorld allows you to play Skyward Sword HD in a multiworld randomizer with other Archipelago-supported games. Items are shuffled across all players in a cooperative experience where finding items in your world may send them to players in completely different games!
+
+## Features
+
+- **912 Locations**: All chests, goddess cubes, NPCs, dungeons, minigames, and more
+- **300+ Items**: Progression items, equipment, tablets, keys, consumables
+- **Full Logic Support**: Ensures you always have items needed to progress
+- **40+ Options**: Customize starting items, logic difficulty, item placement
+- **Custom Logos**: Replace title screen with Archipelago branding
+
+## Download
+
+### Pre-built Release
+Download the latest `sshd.apworld`, `Skyward Sword HD.yaml`, `launch_sshd.bat`, and `launch_sshd_wrapper.py` files from the [Releases](https://github.com/LonLon-Labs/SSHD_APWorld/releases) page.
+
+### Build from Source
+```bash
+git clone https://github.com/LonLon-Labs/SSHD_APWorld.git
+cd sshd_apworld
+python build_apworld.py
+```
+
+## System Requirements
+- **Archipelago**: Version 0.5.0 or higher (Tested with 0.6.6)
+- **Python**: 3.10 or higher (Tested with Python 3.13.9)
+- **Emulator**: Ryujinx (Tested on 1.1.1376)
+- **Game**: The Legend of Zelda: Skyward Sword HD and Update Data (Switch)
+
+## Quick Start
+
+### 0. Install Python and dependencies
+
+- Install Python 3.10 or higher (MAKE SURE TO ADD IT TO PATH)
+- Install the dependencies from [requirements.txt](requirements.txt)
+
+### 1. Install the APWorld and other files
+
+Place `sshd.apworld` in one of these locations:
+- **Windows**: `C:\ProgramData\Archipelago\custom_worlds\`
+- **Linux/Mac**: `~/.local/share/Archipelago/custom_worlds/`
+
+Place `launch_sshd_wrapper.py` in `C:\ProgramData\Archipelago`
+
+Place `launch_sshd.bat` anywhere (or in `C:\ProgramData\Archipelago` - it works from anywhere)
+
+### 2. Extract Your Game
+
+You'll need a legally obtained copy of Skyward Sword HD for Nintendo Switch along with the update data.
+
+1. Extract the RomFS and ExeFS from your game using Ryujinx (MAKE SURE THE UPDATE IS INSTALLED BEFORE EXTRACTING)
+2. Extract them to `C:\ProgramData\Archipelago\sshd_extract` under a `romfs` and an `exefs` folder
+
+### 3. Generate Your Seed
+
+1. Download [Skyward Sword HD Randomizer](https://github.com/mint-choc-chip-skyblade/sshd-rando/releases/latest)
+2. Open it and verify the extracted files
+3. Change all of the options to what you would like and copy the Setting String and Seed
+4. Create a YAML file using `Skyward Sword HD.yaml` as a template
+5. Generate locally using all player yamls
+
+#### From here you have 3 options
+1. Upload the outputed zip to [https://archipelago.randomstuff.cc](https://archipelago.randomstuff.cc) (the official website won't work due to a 64MB file upload limit)
+   - IF YOU USE THIS, THE WEBSOCKET URL IS NOT `archipelago.randomstuff.cc`, YOU NEED TO INPUT `ap.randomstuff.cc:PORT` INTO YOUR CLIENT
+2. Host locally (requires port forwarding)
+3. Unzip the zip and remove the patch file
+   - Unzip the generated `.zip` file
+   - Copy the `.apsshd` file to another spot
+   - Delete it from the unziped folder and rezip
+   - Now extract `.apsshd` and copy `romfs` and `exefs` to your Ryujinx mod directory (located at `C:\Users\Your_Username\AppData\Roaming\Ryujinx\sdcard\atmosphere\contents\01002da013484000\Archipelago` on Windows - you will need to create the `Archipelago` folder)
+   - You can now delete the patch file and upload the rezipped `.zip` file to [archipelago.gg](https://archipelago.gg)
+
+### 4. Open Ryujinx
+Make sure the mod and 1.0.1 update are enabled and open Skyward Sword HD
+
+You should see the custom Archipelago logo - that means it's working
+
+Get into the game far enough to where you can move Link
+
+### 4. Launch the Client
+Double click `launch_sshd.bat`
+
+### 5. Play!
+Items you find are automatically sent to other players and vice-versa!
+
+> Note: You may need to go through a loading zone in order to see or use a new item
+
+> VERY IMPORTANT NOTE: IF FLEDGE SOFTLOCKS YOU AT THE VERY BEGINNING OF THE GAME, JUST SKIP HIM AND HIS 2 CHECKS, THEY ARE JUST GREEN RUPEES
+> NO, I DON'T KNOW HOW TO FIX IT
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit pull requests or open issues.
+
+### Development Setup
+
+1. Fork this repository
+2. Create a feature branch
+3. Make your changes
+4. Test thoroughly
+5. Submit a pull request
+
+##  License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) for details.
+
+## Credits
+
+- **Archipelago Team**: For the amazing multiworld randomizer framework
+- **SSHD Randomizer Team**: For the original SSHD randomizer logic and the very helpful cheat table
+- **Contributors**: Everyone who has helped improve this project
+
+## Support
+
+- **Discord**: Join the [Lon Lon Labs Discord Server](https://discord.gg/VeccXh4ydN)
+- **Issues**: Report bugs on [GitHub Issues](https://github.com/LonLon-Labs/SSHD_APWorld/issues)
+- **Official Website**: [archipelago.gg](https://archipelago.gg)
+
+## Disclaimer
+
+This project is not affiliated with or endorsed by Nintendo. You must own a legal copy of The Legend of Zelda: Skyward Sword HD to use this software.

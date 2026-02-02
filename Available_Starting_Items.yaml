@@ -1,0 +1,199 @@
+# AVAILABLE STARTING ITEMS FOR SKYWARD SWORD HD ARCHIPELAGO
+# Auto-generated from Items.py (SSHD ITEM_TABLE).
+# Use these exact names under custom_starting_items.
+
+custom_starting_items:
+	"Small Key": 1
+	"Green Rupee": 1
+	"Blue Rupee": 1
+	"Red Rupee": 1
+	"Heart": 1
+	"10 Arrows": 1
+	"Goddess White Sword": 1
+	"Progressive Sword": 1
+	"Goddess Sword": 1
+	"Goddess Longsword": 1
+	"Master Sword": 1
+	"True Master Sword": 1
+	"Sailcloth": 1
+	"Goddess's Harp": 1
+	"Progressive Bow": 1
+	"Clawshots": 1
+	"Spiral Charge": 1
+	"Ancient Cistern Boss Key": 1
+	"Fire Sanctuary Boss Key": 1
+	"Sandship Boss Key": 1
+	"Key Piece": 1
+	"Skyview Temple Boss Key": 1
+	"Earth Temple Boss Key": 1
+	"Lanayru Mining Facility Boss Key": 1
+	"Silver Rupee": 1
+	"Gold Rupee": 1
+	"Rupoor": 1
+	"Gratitude Crystal Pack": 1
+	"Glittering Spores": 1
+	"5 Bombs": 1
+	"10 Bombs": 1
+	"Stamina Fruit": 1
+	"Gratitude Crystal": 1
+	"Gust Bellows": 1
+	"Map": 1
+	"Progressive Slingshot": 1
+	"Progressive Beetle": 1
+	"Bottle of Water": 1
+	"Mushroom Spores": 1
+	"Progressive Mitts": 1
+	"5 Deku Seeds": 1
+	"10 Deku Seeds": 1
+	"Uncommon Treasure": 1
+	"Rare Treasure": 1
+	"Guardian Potion": 1
+	"Guardian Potion Plus": 1
+	"Water Dragon's Scale": 1
+	"Bug Medal": 1
+	"Progressive Bug Net": 1
+	"Fairy": 1
+	"Sacred Water": 1
+	"Hook Beetle": 1
+	"Quick Beetle": 1
+	"Tough Beetle": 1
+	"Heart Potion": 1
+	"Heart Potion Plus": 1
+	"Heart Potion Plus Plus": 1
+	"Stamina Potion": 1
+	"Stamina Potion Plus": 1
+	"Air Potion": 1
+	"Air Potion Plus": 1
+	"Fairy in a Bottle": 1
+	"Iron Bow": 1
+	"Sacred Bow": 1
+	"Bomb Bag": 1
+	"Heart Container": 1
+	"Heart Piece": 1
+	"Triforce of Courage": 1
+	"Triforce of Power": 1
+	"Triforce of Wisdom": 1
+	"Sea Chart": 1
+	"Mogma Mitts": 1
+	"Heart Medal": 1
+	"Rupee Medal": 1
+	"Treasure Medal": 1
+	"Potion Medal": 1
+	"Cursed Medal": 1
+	"Scattershot": 1
+	"Progressive Wallet": 1
+	"Big Wallet": 1
+	"Giant Wallet": 1
+	"Tycoon Wallet": 1
+	"Progressive Pouch": 1
+	"Pouch Expansion": 1
+	"Life Medal": 1
+	"Wooden Shield": 1
+	"Hylian Shield": 1
+	"Revitalizing Potion": 1
+	"Revitalizing Potion Plus": 1
+	"Small Seed Satchel": 1
+	"Small Quiver": 1
+	"Small Bomb Bag": 1
+	"Whip": 1
+	"Fireshield Earrings": 1
+	"Big Bug Net": 1
+	"Faron Grasshopper": 1
+	"Woodland Rhino Beetle": 1
+	"Deku Hornet": 1
+	"Skyloft Mantis": 1
+	"Volcanic Ladybug": 1
+	"Blessed Butterfly": 1
+	"Lanayru Ant": 1
+	"Sand Cicada": 1
+	"Gerudo Dragonfly": 1
+	"Eldin Roller": 1
+	"Sky Stag Beetle": 1
+	"Starry Firefly": 1
+	"Empty Bottle": 1
+	"Cawlin's Letter": 1
+	"Beedle's Insect Cage": 1
+	"Rattle": 1
+	"Hornet Larvae": 1
+	"Bird Feather": 1
+	"Tumbleweed": 1
+	"Lizard Tail": 1
+	"Eldin Ore": 1
+	"Ancient Flower": 1
+	"Amber Relic": 1
+	"Dusk Relic": 1
+	"Jelly Blob": 1
+	"Monster Claw": 1
+	"Monster Horn": 1
+	"Ornamental Skull": 1
+	"Evil Crystal": 1
+	"Blue Bird Feather": 1
+	"Golden Skull": 1
+	"Goddess Plume": 1
+	"Emerald Tablet": 1
+	"Ruby Tablet": 1
+	"Amber Tablet": 1
+	"Stone of Trials": 1
+	"Ballad of the Goddess": 1
+	"Farore's Courage": 1
+	"Nayru's Wisdom": 1
+	"Din's Power": 1
+	"Song of the Hero Part": 1
+	"Eldin Song of the Hero Part": 1
+	"Lanayru Song of the Hero Part": 1
+	"Song of the Hero": 1
+	"Revitalizing Potion Plus Plus": 1
+	"Hot Pumpkin Soup": 1
+	"Cold Pumpkin Soup": 1
+	"Life Tree Seedling": 1
+	"Life Tree Fruit": 1
+	"Extra Wallet": 1
+	"Skyview Temple Small Key": 1
+	"Lanayru Mining Facility Small Key": 1
+	"Ancient Cistern Small Key": 1
+	"Fire Sanctuary Small Key": 1
+	"Sandship Small Key": 1
+	"Sky Keep Small Key": 1
+	"Lanayru Caves Small Key": 1
+	"Skyview Temple Map": 1
+	"Earth Temple Map": 1
+	"Lanayru Mining Facility Map": 1
+	"Ancient Cistern Map": 1
+	"Fire Sanctuary Map": 1
+	"Sandship Map": 1
+	"Sky Keep Map": 1
+	"Group of Tadtones": 1
+	"Scrapper": 1
+	"Health Trap": 1
+	"Groose Trap": 1
+	"Noise Trap": 1
+	"Curse Trap": 1
+	"Burn Trap": 1
+	"Game Beatable": 1
+	"Faron Woods Goddess Cube on West Great Tree near Exit": 1
+	"Faron Woods Goddess Cube on East Great Tree with Clawshots Target": 1
+	"Faron Woods Goddess Cube on East Great Tree with Rope": 1
+	"Deep Woods Goddess Cube near Goron": 1
+	"Deep Woods Goddess Cube in front of Temple": 1
+	"Deep Woods Goddess Cube on top of Temple": 1
+	"Lake Floria Goddess Cube": 1
+	"Floria Waterfall Goddess Cube on High Ledge": 1
+	"Eldin Volcano Goddess Cube at Eldin Entrance": 1
+	"Eldin Volcano Goddess Cube near Mogma Turf Entrance": 1
+	"Eldin Volcano Goddess Cube West of Temple": 1
+	"Eldin Volcano Goddess Cube East of Temple": 1
+	"Eldin Volcano Goddess Cube on Sand Slide": 1
+	"Mogma Turf Goddess Cube on Raised Pillar": 1
+	"Volcano Summit Goddess Cube in Lava Lake": 1
+	"Volcano Summit Goddess Cube at Summit Waterfall": 1
+	"Volcano Summit Goddess Cube near Fire Sanctuary Entrance": 1
+	"Lanayru Mine Goddess Cube behind First Landing Robot": 1
+	"Lanayru Desert Goddess Cube near Caged Robot": 1
+	"Lanayru Desert Goddess Cube in Sand Oasis": 1
+	"Lanayru Desert Goddess Cube in Secret Passageway": 1
+	"Temple of Time Goddess Cube": 1
+	"Lanayru Gorge Goddess Cube": 1
+	"Ancient Harbour Goddess Cube": 1
+	"Skipper's Retreat Goddess Cube": 1
+	"Pirate Stronghold Goddess Cube": 1
+	"Skyview Spring Goddess Cube": 1

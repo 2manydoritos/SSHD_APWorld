@@ -1,0 +1,739 @@
+"""
+Wrapper to integrate sshd-rando generation into Archipelago.
+Calls sshd-rando's generation pipeline and returns the World object for item manipulation.
+
+NOTE: This wrapper requires sshd-rando to be installed locally. When running from bundled
+.apworld files, sshd-rando must be available in the parent directory of the SSHD world module.
+"""
+
+import sys
+import os
+from pathlib import Path
+import tempfile
+import shutil
+import zipfile
+import random
+from typing import Tuple, Dict, Any
+
+# Detect if we're running from within an .apworld ZIP file or filesystem
+# Don't change directory during import - do it lazily when needed
+# Try multiple potential locations for sshd-rando
+
+def _extract_sshd_rando_from_zip():
+    """Extract sshd-rando-backend from apworld ZIP to a temporary location if needed."""
+    current_file = Path(__file__).resolve()
+    
+    # Check if we're running from within a ZIP file (.apworld)
+    current_file_str = str(current_file)
+    if '.apworld' in current_file_str or '.zip' in current_file_str:
+        # We're in a ZIP - need to extract sshd-rando-backend
+        try:
+            # Find the ZIP file path
+            if '.apworld' in current_file_str:
+                zip_path_parts = current_file_str.split('.apworld')
+                zip_path = Path(zip_path_parts[0] + '.apworld')
+            else:
+                zip_path_parts = current_file_str.split('.zip')
+                zip_path = Path(zip_path_parts[0] + '.zip')
+            
+            if zip_path.exists() and zipfile.is_zipfile(zip_path):
+                # Create a temp directory for extraction
+                temp_dir = Path(tempfile.gettempdir()) / "sshd_apworld_extracted"
+                temp_dir.mkdir(parents=True, exist_ok=True)
+                
+                backend_dest = temp_dir / "sshd-rando-backend"
+                
+                # Only extract if not already extracted or if ZIP is newer
+                if not backend_dest.exists() or zip_path.stat().st_mtime > backend_dest.stat().st_mtime:
+                    # Extract sshd-rando-backend from ZIP
+                    with zipfile.ZipFile(zip_path, 'r') as zf:
+                        # Find all files under sshd/sshd-rando-backend/
+                        backend_files = [name for name in zf.namelist() 
+                                        if name.startswith('sshd/sshd-rando-backend/')]
+                        
+                        if backend_files:
+                            # Clean up old extraction
+                            if backend_dest.exists():
+                                shutil.rmtree(backend_dest)
+                            
+                            # Extract files
+                            for file_name in backend_files:
+                                # Remove 'sshd/' prefix to get relative path within backend
+                                relative_path = file_name[len('sshd/'):]
+                                target_path = temp_dir / relative_path
+                                
+                                # Create directories as needed
+                                if file_name.endswith('/'):
+                                    target_path.mkdir(parents=True, exist_ok=True)
+                                else:
+                                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                                    with zf.open(file_name) as source:
+                                        with open(target_path, 'wb') as target:
+                                            shutil.copyfileobj(source, target)
+                            
+                            print(f"[SSHDRWrapper] Extracted sshd-rando-backend from {zip_path.name} to {backend_dest}")
+                            return backend_dest
+                else:
+                    print(f"[SSHDRWrapper] Using cached sshd-rando-backend from {backend_dest}")
+                    return backend_dest
+        except Exception as e:
+            print(f"[SSHDRWrapper] Warning: Failed to extract sshd-rando-backend from ZIP: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    return None
+
+def _find_sshd_rando_path():
+    """Find sshd-rando-backend directory, checking multiple locations."""
+    current_file = Path(__file__).resolve()
+    
+    # First, try extracting from ZIP if we're in an apworld
+    extracted_path = _extract_sshd_rando_from_zip()
+    if extracted_path and extracted_path.exists():
+        if (extracted_path / "logic").exists() and (extracted_path / "constants").exists():
+            return extracted_path
+    
+    potential_paths = [
+        current_file.parent / "sshd-rando-backend",  # Bundled in apworld: sshd/sshd-rando-backend/
+        current_file.parent.parent / "sshd-rando-backend",  # One level up
+        current_file.parent.parent / "sshd-rando",  # Development: adjacent to SSHD_APWorld
+        Path.home() / "sshd-rando",  # User's home directory (manual install)
+    ]
+    
+    for path in potential_paths:
+        # Check if path exists and has expected subdirectories (logic/ and constants/)
+        if path.exists() and path.is_dir():
+            # Verify it's actually sshd-rando by checking for key directories
+            if (path / "logic").exists() and (path / "constants").exists():
+                return path
+    
+    return None
+
+POTENTIAL_SSHD_RANDO_PATHS = [
+    Path(__file__).parent / "sshd-rando-backend",
+    Path(__file__).parent.parent / "sshd-rando-backend",
+    Path(__file__).parent.parent / "sshd-rando",
+    Path.home() / "sshd-rando",
+]
+
+SSHD_RANDO_PATH = _find_sshd_rando_path()
+
+CURRENT_DIR = Path(__file__).parent
+
+# Flag to track if sshd-rando has been initialized (checked lazily, not at import time)
+_sshd_rando_initialized = False
+
+def _initialize_sshd_rando():
+    """Lazy initialization of sshd-rando imports. Only called when actually generating."""
+    global _sshd_rando_initialized
+    
+    if _sshd_rando_initialized:
+        return
+    
+    # Check if sshd-rando was found (only when we actually need it)
+    if SSHD_RANDO_PATH is None or not SSHD_RANDO_PATH.exists():
+        # Provide detailed debugging information
+        current_file = Path(__file__).resolve()
+        debug_info = []
+        debug_info.append(f"Current file: {current_file}")
+        debug_info.append(f"Parent directory: {current_file.parent}")
+        
+        # List contents of parent directory
+        if current_file.parent.exists():
+            debug_info.append(f"Contents of {current_file.parent}:")
+            try:
+                for item in sorted(current_file.parent.iterdir()):
+                    item_type = "DIR " if item.is_dir() else "FILE"
+                    debug_info.append(f"  {item_type}: {item.name}")
+            except Exception as e:
+                debug_info.append(f"  Error listing directory: {e}")
+        
+        raise ImportError(
+            f"sshd-rando not found. Searched in:\n" +
+            "\n".join(f"  - {path} (exists: {path.exists()})" for path in POTENTIAL_SSHD_RANDO_PATHS) +
+            "\n\nDebug information:\n" +
+            "\n".join(debug_info) +
+            "\n\nPlease ensure sshd-rando-backend is installed in one of the searched locations."
+        )
+    
+    # Add sshd-rando to sys.path so we can import it
+    if str(SSHD_RANDO_PATH) not in sys.path:
+        sys.path.insert(0, str(SSHD_RANDO_PATH))
+    
+    # Mock the GUI modules to avoid PySide6 dependency
+    from unittest.mock import MagicMock
+    
+    sys.modules['PySide6'] = MagicMock()
+    sys.modules['PySide6.QtCore'] = MagicMock()
+    sys.modules['PySide6.QtWidgets'] = MagicMock()
+    sys.modules['gui'] = MagicMock()
+    sys.modules['gui.dialogs'] = MagicMock()
+    sys.modules['gui.dialogs.dialog_header'] = MagicMock()
+    sys.modules['gui.guithreads'] = MagicMock()
+    
+    _sshd_rando_initialized = True
+
+
+def create_sshd_rando_config(settings_dict: Dict[str, Any], output_dir: Path, seed: str = None) -> 'Config':
+    """
+    Create an sshd-rando Config object from Archipelago settings.
+    
+    Args:
+        settings_dict: Dictionary of SSHD setting names → values
+        output_dir: Path where romfs/exefs should be generated
+        seed: Seed string (e.g. "AirStrongholdPlantSkipper")
+    
+    Returns:
+        Config object compatible with sshd-rando
+        print(f"[SSHDRWrapper] ======== create_sshd_rando_config CALLED ========")
+        print(f"[SSHDRWrapper] settings_dict keys: {list(settings_dict.keys())}")
+    """
+    # Import sshd-rando modules (lazy load)
+    from logic.config import Config, create_default_setting, write_config_to_file
+    from logic.settings import get_all_settings_info, SettingMap
+    
+    # Create default config first
+    config = Config()
+    config.output_dir = output_dir
+    # Note: seed should be specified in the YAML config file, not set directly here
+    # Let sshd-rando's generate() function handle seed from config file
+    config.generate_spoiler_log = False  # We don't need spoiler logs
+    
+    # Add default SettingMap for one world
+    config.settings.append(SettingMap())
+    setting_map = config.settings[0]
+    
+    # Initialize all settings to defaults
+    for setting_name in get_all_settings_info():
+        setting_map.settings[setting_name] = create_default_setting(setting_name)
+    
+    # Now override with archipelago settings
+    # Map setting names from archipelago to sshd-rando
+    # NOTE: starting_tablets, starting_sword, start_with_sailcloth are handled separately below
+    setting_name_map = {
+        "required_dungeon_count": "required_dungeon_count",
+        "triforce_required": "triforce_required",
+        "triforce_shuffle": "triforce_shuffle",
+        "gate_of_time_sword_requirement": "gate_of_time_sword_requirement",
+        "gate_of_time_dungeon_requirements": "gate_of_time_dungeon_requirements",
+        "imp2_skip": "imp2_skip",
+        "skip_horde": "skip_horde",
+        "skip_ghirahim3": "skip_ghirahim3",
+        "gratitude_crystal_shuffle": "gratitude_crystal_shuffle",
+        "stamina_fruit_shuffle": "stamina_fruit_shuffle",
+        "npc_closet_shuffle": "npc_closet_shuffle",
+        "hidden_item_shuffle": "hidden_item_shuffle",
+        "rupee_shuffle": "rupee_shuffle",
+        "goddess_chest_shuffle": "goddess_chest_shuffle",
+        "trial_treasure_shuffle": "trial_treasure_shuffle",
+        "tadtone_shuffle": "tadtone_shuffle",
+        "gossip_stone_treasure_shuffle": "gossip_stone_treasure_shuffle",
+        "small_key_shuffle": "small_key_shuffle",
+        "boss_key_shuffle": "boss_key_shuffle",
+        "map_shuffle": "map_shuffle",
+        "randomize_entrances": "randomize_entrances",
+        "randomize_dungeons": "randomize_dungeons",
+        "randomize_trials": "randomize_trials",
+        # "starting_tablets": handled manually via starting_inventory below
+        # "starting_sword": handled manually via starting_inventory below
+        # "start_with_sailcloth": handled manually via starting_inventory below
+        "open_lake_floria_gate": "open_lake_floria_gate",
+        "open_thunderhead": "open_thunderhead",
+        "fast_bird_statues": "fast_bird_statues",
+        "skip_intro": "skip_intro",
+        "skip_skykeep_door_cutscene": "skip_skykeep_door_cutscene",
+        "skip_harp_playing": "skip_harp_playing",
+        "skip_misc_cutscenes": "skip_misc_cutscenes",
+        "music_randomization": "music_randomization",
+        "cutoff_game_over_music": "cutoff_game_over_music",
+        "no_spoiler_log": "no_spoiler_log",
+        "empty_unreachable_locations": "empty_unreachable_locations",
+        "damage_multiplier": "damage_multiplier",
+        "add_junk_items": "add_junk_items",
+        "junk_item_rate": "junk_item_rate",
+        "progressive_items": "progressive_items",
+        "logic_rules": "logic_rules",
+        "item_pool": "item_pool",
+    }
+    
+    # Apply settings
+    for ap_key, rando_key in setting_name_map.items():
+        if ap_key in settings_dict and rando_key in setting_map.settings:
+            value = settings_dict[ap_key]
+            setting = setting_map.settings[rando_key]
+            
+            # Convert Python booleans to string values that sshd-rando expects
+            if isinstance(value, bool):
+                value_str = "true" if value else "false"
+            else:
+                value_str = str(value)
+            
+            # Find the option index for this value
+            if setting.info and value_str in setting.info.options:
+                option_index = setting.info.options.index(value_str)
+                setting.update_current_value(option_index)
+    
+    # CRITICAL: Manually populate starting_inventory for starting_tablets, starting_sword, and start_with_sailcloth
+    # The sshd-rando backend uses setting_map.starting_inventory, NOT the settings directly
+    # Handle starting_tablets (directly add to starting_inventory)
+    if "starting_tablets" in settings_dict:
+        tablet_count = int(settings_dict["starting_tablets"])
+        # Randomize tablet selection for counts 1-2, use fixed order for 0 or 3
+        tablet_names = ["Emerald Tablet", "Ruby Tablet", "Amber Tablet"]
+        if tablet_count in [1, 2]:
+            # Randomly select tablets for 1 or 2
+            selected_tablets = random.sample(tablet_names, tablet_count)
+        else:
+            # Use sequential order for 0 or 3
+            selected_tablets = tablet_names[:tablet_count]
+        for tablet in selected_tablets:
+            setting_map.starting_inventory[tablet] = 1
+    
+    # Handle starting_sword (add Progressive Sword based on level)
+    if "starting_sword" in settings_dict:
+        sword_value = settings_dict["starting_sword"]
+        sword_levels = {
+            "none": 0,
+            "practice_sword": 1,          # Progressive Sword x1
+            "goddess_sword": 2,           # Progressive Sword x2
+            "goddess_longsword": 3,       # Progressive Sword x3
+            "goddess_white_sword": 4,     # Progressive Sword x4
+            "master_sword": 5,            # Progressive Sword x5
+            "true_master_sword": 6        # Progressive Sword x6
+        }
+        if isinstance(sword_value, int):
+            sword_level = max(0, min(6, sword_value))
+        else:
+            sword_level = sword_levels.get(str(sword_value), 0)
+        if sword_level > 0:
+            setting_map.starting_inventory["Progressive Sword"] = sword_level
+    
+    # Handle start_with_sailcloth (add Sailcloth to starting_inventory if true)
+    if settings_dict.get("start_with_sailcloth", False):
+        setting_map.starting_inventory["Sailcloth"] = 1
+
+    # Ensure sshd-rando starting_sword setting matches the Archipelago option
+    if "starting_sword" in settings_dict and "starting_sword" in setting_map.settings:
+        starting_sword_setting = setting_map.settings["starting_sword"]
+        sword_value = settings_dict["starting_sword"]
+        sword_value_map = {
+            0: "no_sword",
+            1: "practice_sword",
+            2: "goddess_sword",
+            3: "goddess_longsword",
+            4: "goddess_white_sword",
+            5: "master_sword",
+            6: "true_master_sword"
+        }
+        if isinstance(sword_value, int):
+            sword_value_str = sword_value_map.get(sword_value, "goddess_sword")
+        else:
+            sword_value_str = str(sword_value)
+        if starting_sword_setting.info and sword_value_str in starting_sword_setting.info.options:
+            option_index = starting_sword_setting.info.options.index(sword_value_str)
+            starting_sword_setting.update_current_value(option_index)
+    
+    # Handle custom_starting_items from YAML
+    if "custom_starting_items" in settings_dict:
+        custom_items = settings_dict["custom_starting_items"]
+        if isinstance(custom_items, dict):
+            for item_name, count in custom_items.items():
+                if count > 0:
+                    setting_map.starting_inventory[item_name] = count
+
+    return config
+
+
+def generate_sshd_rando_mod(settings_dict: Dict[str, Any], output_dir: Path, seed: str = None, apply_patches: bool = True) -> Tuple[Any, Path, str]:
+    """
+    Generate SSHD randomizer mod using sshd-rando backend.
+    
+    Args:
+        settings_dict: Archipelago settings dictionary
+        output_dir: Directory where romfs/exefs will be generated
+        seed: Seed string (e.g. "AirStrongholdPlantSkipper"). If None, random seed is used.
+        apply_patches: If True, apply patches immediately. If False, return world without patching (for Archipelago integration)
+    
+    Returns:
+        Tuple of (World object, output_dir path, setting_string)
+    
+    Raises:
+        Exception: If sshd-rando generation fails
+    """
+    # Check for lz4 module before anything else
+    try:
+        import lz4.block
+    except ImportError as e:
+        error_msg = (
+            "\n═══════════════════════════════════════════════════════════════\n"
+            "ERROR: Required module 'lz4' is not installed!\n"
+            "═══════════════════════════════════════════════════════════════\n\n"
+            "The SSHD Archipelago world requires the 'lz4' Python package.\n\n"
+            "TO FIX: Open PowerShell/Command Prompt as ADMINISTRATOR and run:\n\n"
+            "    pip install lz4\n\n"
+            "Then restart Archipelago and try again.\n"
+            "═══════════════════════════════════════════════════════════════\n"
+        )
+        print(error_msg)
+        raise Exception(f"Missing required dependency: lz4. Please install it with 'pip install lz4'") from e
+    
+    # Initialize sshd-rando imports (lazy load)
+    _initialize_sshd_rando()
+    from logic.generate import generate
+    from patches.allpatchhandler import AllPatchHandler
+    from logic.config import write_config_to_file
+    
+    # Check if romfs is extracted (use extract_path from settings_dict)
+    extract_path = Path(settings_dict.get("extract_path", "C:\\ProgramData\\Archipelago\\sshd_extract"))
+    romfs_path = extract_path / "romfs"
+    
+    if not romfs_path.exists():
+        raise Exception(
+            f"SSHD romfs not extracted. Please extract your SSHD ROM to:\n"
+            f"  {extract_path}\n\n"
+            f"The folder should contain 'romfs' and 'exefs' subdirectories."
+        )
+    
+    # Create output directory - must be absolute path
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # CHECK IF SETTING STRING WAS PROVIDED FIRST (before creating config)
+    setting_string = settings_dict.get("setting_string", "")
+    if setting_string and setting_string.strip():
+        print(f"[SSHDRWrapper] Using Setting String from Archipelago YAML")
+        try:
+            setting_string_file = output_dir / "setting_string.txt"
+            setting_string_file.write_text(setting_string, encoding="utf-8")
+            print(f"[SSHDRWrapper] Setting String written to: {setting_string_file}")
+        except Exception as e:
+            print(f"[SSHDRWrapper] WARNING: Could not write Setting String to file: {e}")
+        
+        # Use helper module to decode Setting String
+        from .setting_string_decoder import decode_setting_string_to_config
+        config = decode_setting_string_to_config(setting_string, output_dir, seed)
+        
+        # EXTRACT SETTING STRING DECODED STARTING ITEMS (before other settings are applied)
+        # These are the items that come directly from the Setting String, not from starting_sword/starting_hearts
+        try:
+            if hasattr(config, 'settings') and config.settings and len(config.settings) > 0:
+                setting_map = config.settings[0]  # It's a list, not a dict!
+                if hasattr(setting_map, 'starting_inventory'):
+                    setting_string_starting_items = dict(setting_map.starting_inventory)
+                    print(f"[SSHDRWrapper] Setting String decoded items: {len(setting_string_starting_items)} item types")
+                    for item_name, count in setting_string_starting_items.items():
+                        print(f"[SSHDRWrapper]   {item_name} x{count}")
+                    # Store in settings_dict so __init__.py can access it
+                    settings_dict['_setting_string_starting_items'] = setting_string_starting_items
+        except Exception as e:
+            print(f"[SSHDRWrapper] Exception during extraction: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # Write the populated config to file
+        config_file = output_dir / "ap_config.yaml"
+        from logic.config import write_config_to_file
+        write_config_to_file(config_file, config, write_preferences=False)
+        
+        print(f"[SSHDRWrapper] Created config from Setting String")
+        print(f"[SSHDRWrapper] Config written to: {config_file}")
+    else:
+        # FALLBACK: Use individual YAML settings conversion (if no Setting String provided)
+        print(f"[SSHDRWrapper] Using individual YAML settings (no Setting String provided)")
+        config = create_sshd_rando_config(settings_dict, output_dir, seed)
+        config.output_dir = output_dir
+        
+        # Write config to the output directory
+        config_file = output_dir / "ap_config.yaml"
+        write_config_to_file(config_file, config, write_preferences=False)
+        
+        # If seed is specified, append it to the YAML config file
+        # sshd-rando expects: seed: "12345" (as string) at the top level of the YAML
+        if seed is not None:
+            import yaml
+            with open(config_file, 'r') as f:
+                config_data = yaml.safe_load(f) or {}
+            config_data['seed'] = str(seed)  # Convert to string for YAML
+            with open(config_file, 'w') as f:
+                yaml.dump(config_data, f, default_flow_style=False)
+        
+    
+    # Now we have 'config' object populated either from Setting String or from individual settings
+    # Ensure it's saved to the config file for reference
+    if 'config_file' not in locals():
+        # This shouldn't happen, but just in case
+        config_file = output_dir / "ap_config.yaml"
+    
+    print(f"[SSHDRWrapper] Generating world logic with sshd-rando...")
+    print(f"[SSHDRWrapper] Target output directory: {output_dir}")
+    if seed:
+        print(f"[SSHDRWrapper] Using seed: {seed}")
+    else:
+        print(f"[SSHDRWrapper] Using random seed")
+    
+    # DEBUG: Print the config file before generation
+    try:
+        import yaml
+        with open(config_file, 'r') as f:
+            config_data = yaml.safe_load(f) or {}
+        print(f"[SSHDRWrapper] DEBUG: Config file seed field: {config_data.get('seed', 'NOT SET')}")
+    except Exception as e:
+        print(f"[SSHDRWrapper] DEBUG: Could not read config seed: {e}")
+    
+    # Generate world (location placement logic)
+    # Pass config_file path - generate() will read and use it
+    worlds = generate(config_file)
+    world = worlds[0]
+    
+    if world is None:
+        raise Exception("sshd-rando generation failed: world is None")
+    
+    # CRITICAL: Override the output_dir after loading config
+    # because sshd-rando might have loaded it as relative path
+    world.config.output_dir = output_dir
+    print(f"[SSHDRWrapper] Corrected world output dir to: {world.config.output_dir}")
+    
+    # Apply patches to create romfs/exefs (can be skipped for Archipelago integration)
+    if apply_patches:
+        print("[SSHDRWrapper] Applying patches to generate romfs/exefs...")
+        patch_handler = AllPatchHandler(world)
+        patch_handler.do_all_patches()
+        
+        # Verify output was created at the correct location
+        romfs_out = output_dir / "romfs"
+        exefs_out = output_dir / "exefs"
+        
+        if romfs_out.exists() and exefs_out.exists():
+            print(f"[SSHDRWrapper] Successfully generated mod!")
+            print(f"  romfs: {len(list(romfs_out.rglob('*')))} items")
+            print(f"  exefs: {len(list(exefs_out.rglob('*')))} items")
+        else:
+            print(f"[ERROR] Output not found at expected location: {output_dir}")
+            print(f"  romfs exists: {romfs_out.exists()}")
+            print(f"  exefs exists: {exefs_out.exists()}")
+    else:
+        print("[SSHDRWrapper] Skipping patches (will be applied by Archipelago after overlay)")
+    
+    hash_value = world.config.get_hash()
+    print(f"[SSHDRWrapper] Hash: {hash_value}")
+    
+    # Store the hash in settings_dict so __init__.py can pass it to Archipelago
+    settings_dict['_sshd_hash'] = hash_value
+    
+    # Extract Setting String if available
+    setting_string = ""
+    if hasattr(world, 'config') and hasattr(world.config, 'setting_string'):
+        setting_string = world.config.setting_string
+        print(f"[SSHDRWrapper] Setting String: {setting_string[:60]}...")
+    
+    return world, output_dir, setting_string
+
+
+def extract_location_item_mapping(world: Any) -> Dict[str, str]:
+    """
+    Extract the location → item mapping from the generated world.
+    
+    Args:
+        world: sshd-rando World object
+    
+    Returns:
+        Dictionary mapping location names to item names
+    """
+    location_item_map = {}
+    
+    # World is a World object with a list of areas
+    # Each area has locations
+    if not hasattr(world, 'areas'):
+        print(f"[Warning] World object structure unexpected: {type(world)}")
+        return location_item_map
+    
+    # Iterate through all areas and locations in the world
+    for area in world.areas:
+        if not hasattr(area, 'locations'):
+            continue
+        for location in area.locations:
+            if location.current_item:
+                location_item_map[location.name] = location.current_item.name
+            else:
+                location_item_map[location.name] = "Empty"
+    
+    return location_item_map
+
+
+def overlay_multiworld_items(world: Any, location_item_mapping: Dict[str, str]) -> Dict[str, Any]:
+    """
+    Overlay Archipelago multiworld items onto the sshd-rando generated world.
+    
+    This replaces items in SSHD locations with Archipelago multiworld items.
+    Cross-world items are replaced with Cawlin's Letter containers.
+    
+    Args:
+        world: sshd-rando World object with filled locations
+        location_item_mapping: Dict[sshd_location_name] = ap_item_name
+                              Maps SSHD location names to Archipelago item names or "Cawlin's Letter"
+    
+    Returns:
+        Dictionary with overlay results:
+        {
+            "total_locations": int,
+            "replaced_items": int,
+            "cross_world_items": int,
+            "unmapped_locations": int,
+            "protected_locations_skipped": int
+        }
+    """
+    # Locations with hardcoded game logic that MUST keep their original items
+    # These locations have event flags tied to specific items that trigger game progression
+    PROTECTED_LOCATIONS = {
+        "Fledge's Gift",  # Adventure Pouch - event flag required for game progression
+    }
+    
+    results = {
+        "total_locations": 0,
+        "replaced_items": 0,
+        "cross_world_items": 0,
+        "unmapped_locations": 0,
+        "protected_locations_skipped": 0
+    }
+    
+    if not hasattr(world, 'item_table'):
+        print(f"[SSHDRWrapper] Warning: World object doesn't have 'item_table' attribute")
+        return results
+    
+    replaced_count = 0
+    cross_world_count = 0
+    unmapped_count = 0
+    protected_count = 0
+    
+    # Get locations from sshd-rando world.location_table
+    if not hasattr(world, 'location_table'):
+        print(f"[SSHDRWrapper] Warning: World has no location_table attribute")
+        print(f"[SSHDRWrapper] World type: {type(world)}")
+        print(f"[SSHDRWrapper] Available attributes: {[a for a in dir(world) if not a.startswith('_')]}")
+        return results
+    
+    print(f"[SSHDRWrapper] Processing {len(world.location_table)} locations from location_table")
+    
+    # Debug: Check if Cawlin's Letter is in item_table (remember: apostrophes get stripped)
+    cawlin_lookup = "Cawlins Letter"  # sshd-rando strips apostrophes
+    if cawlin_lookup in world.item_table:
+        print(f"[SSHDRWrapper] ✓ Cawlin's Letter found in item_table (as '{cawlin_lookup}')")
+    else:
+        print(f"[SSHDRWrapper] ✗ Cawlin's Letter NOT in item_table!")
+        print(f"[SSHDRWrapper] Available items (first 30): {list(world.item_table.keys())[:30]}...")
+    
+    # Track mapping distribution
+    cawlin_in_mapping = sum(1 for v in location_item_mapping.values() if v == "Cawlin's Letter")
+    print(f"[SSHDRWrapper] Mapping contains {cawlin_in_mapping} Cawlin's Letter entries")
+    
+    # Iterate through all locations in the mapping
+    shop_locations_skipped = 0
+    for location_name, location in world.location_table.items():
+        results["total_locations"] += 1
+        
+        # Skip protected locations - they have hardcoded game logic that depends on specific items
+        if location_name in PROTECTED_LOCATIONS:
+            protected_count += 1
+            unmapped_count += 1
+            print(f"[SSHDRWrapper] Protected location '{location_name}' - keeping original item")
+            continue
+        
+        # Skip shop locations - they have special item data that can cause issues
+        if "Shop" in location_name or "Beedle" in location_name or "Batreaux" in location_name or "Dodoh" in location_name:
+            shop_locations_skipped += 1
+            unmapped_count += 1
+            continue
+        
+        # Check if this location should have its item replaced
+        if location_name in location_item_mapping:
+            target_item_name = location_item_mapping[location_name]
+            
+            # sshd-rando strips apostrophes from item names when storing in item_table
+            # So we need to do the same when looking them up
+            target_item_lookup = target_item_name.replace("'", "")
+            
+            # Get or create the replacement item
+            new_item = None
+            
+            if target_item_lookup in world.item_table:
+                new_item = world.item_table[target_item_lookup]
+            
+            # Check if this is a cross-world item (either explicit or fallback)
+            is_cross_world = target_item_name == "Cawlin's Letter"
+            
+            # If item not found, use Cawlin's Letter as fallback (cross-world item placeholder)
+            if new_item is None:
+                target_item_lookup = "Cawlins Letter"  # apostrophe stripped
+                if target_item_lookup in world.item_table:
+                    new_item = world.item_table[target_item_lookup]
+                    is_cross_world = True
+                    # Log first few replacements
+                    if cross_world_count <= 5:
+                        print(f"[SSHDRWrapper] Using Cawlin's Letter for cross-world item '{target_item_name}' at {location_name}")
+            
+            # Safety check: ensure we have a valid item before replacing
+            if new_item is None:
+                print(f"[SSHDRWrapper] ERROR: Could not find item '{target_item_lookup}' OR Cawlin's Letter in item_table!")
+                print(f"[SSHDRWrapper] Available items (first 30): {list(world.item_table.keys())[:30]}")
+                unmapped_count += 1
+                continue
+            
+            old_item_name = location.current_item.name if hasattr(location, 'current_item') and location.current_item else "Empty"
+            
+            try:
+                # Replace the item in the location
+                if hasattr(location, 'set_current_item'):
+                    location.set_current_item(new_item)
+                else:
+                    location.current_item = new_item
+                
+                replaced_count += 1
+                
+                # Count cross-world items
+                if is_cross_world:
+                    cross_world_count += 1
+                    # Debug first few Cawlin replacements
+                    if cross_world_count <= 3:
+                        print(f"[SSHDRWrapper] Replaced with Cawlin's Letter at {location_name}")
+                
+            except Exception as e:
+                print(f"[SSHDRWrapper] Warning: Failed to set item at {location_name}: {e}")
+                unmapped_count += 1
+        else:
+            unmapped_count += 1
+    
+    results["replaced_items"] = replaced_count
+    results["cross_world_items"] = cross_world_count
+    results["unmapped_locations"] = unmapped_count
+    results["protected_locations_skipped"] = protected_count
+    print(f"[SSHDRWrapper] Overlay complete: {replaced_count} items replaced ({cross_world_count} Cawlin's Letters) from {results['total_locations']} total")
+    
+    return results
+
+
+if __name__ == "__main__":
+    # Test the wrapper
+    test_settings = {
+        "required_dungeon_count": 2,
+        "triforce_required": True,
+        "logic_rules": "all_locations_reachable",
+    }
+    
+    test_output = Path(__file__).parent / "test_sshdr_output"
+    
+    try:
+        # Test WITHOUT seed first to verify basic functionality
+        world, output_path, setting_string = generate_sshd_rando_mod(test_settings, test_output)
+        print(f"\n✓ Test successful!")
+        print(f"  Generated at: {output_path}")
+        print(f"  Setting String: {setting_string[:80] if setting_string else 'N/A'}...")
+        
+        # Show location mapping
+        mapping = extract_location_item_mapping(world)
+        print(f"  Total locations: {len(mapping)}")
+        print(f"  Sample: {list(mapping.items())[:5]}")
+        
+    except Exception as e:
+        print(f"\n✗ Test failed: {e}")
+        import traceback
+        traceback.print_exc()

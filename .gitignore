@@ -1,0 +1,42 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Build artifacts
+*.apworld
+build.log
+dist/
+build/
+
+# PyInstaller spec files
+*.spec
+
+# Development/test files
+_test_*.py
+*_test.py
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Generated files
+*.generated.yaml
+
+# Development utilities
+ALL_ITEM_MEMORY_ADDRESSES.py
+ITEM_MEMORY_ADDRESSES.py
+ITEM_MEMORY_MAP.py
+check_config.py
+decode_setting_string.py
+worlds_stub.py

@@ -1,0 +1,25 @@
+# SSHD Archipelago World - Required Python Dependencies
+# Install these with: pip install -r requirements.txt
+# OR install into Archipelago's lib with: pip install --target="C:\ProgramData\Archipelago\lib" -r requirements.txt
+
+# Compression libraries
+lz4>=4.3.0
+nlzss11
+
+# YAML parsing
+pyyaml
+
+# GUI dependencies (for kvui client)
+platformdirs
+kivy
+https://github.com/kivymd/KivyMD/archive/master.zip
+
+
+psutil
+pymem
+wensockets
+pyyamlpathspec
+colorama
+typing_extensions
+schema
+bsdiff4

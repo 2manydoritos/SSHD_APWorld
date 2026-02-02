@@ -1,0 +1,22 @@
+{
+    "game": "Skyward Sword HD",
+    "package_version": "0.1.0",
+    "display_name": "The Legend of Zelda: Skyward Sword HD",
+    "compatibility_version": 0,
+    "versions": {
+        "0.1.0": {
+            "game_version": "v1.0.0",
+            "release_date": "2025-01-26"
+        }
+    },
+    "worlds": {
+        "sshd": {
+            "local_path": ".",
+            "web": {
+                "setup": {
+                    "en": "docs/setup_en.md"
+                }
+            }
+        }
+    }
+}

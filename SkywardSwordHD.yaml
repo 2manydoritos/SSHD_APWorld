@@ -1,0 +1,260 @@
+name: Player1
+game: Skyward Sword HD
+description: Skyward Sword HD Archipelago - Complete Configuration
+
+Skyward Sword HD:
+
+
+  # ========================================
+  # REQUIRED: PATH TO EXTRACTED ROM FILES
+  # ========================================
+  
+  # Path to extracted SSHD ROM (must contain romfs/ and exefs/ folders)
+  extract_path: "C:\\ProgramData\\Archipelago\\sshd_extract"
+
+
+
+  # ====================================================================================
+
+
+
+  # YOU HAVE TWO OPTIONS TO CONFIGURE YOUR RANDOMIZER SETTINGS:
+
+
+  # ========================================
+  # CONFIGURATION METHOD ONE: SETTING STRING
+  # NOT CURRENTLY WORKING RELIABLY ENOUGH - USE METHOD TWO INSTEAD FOR NOW
+  # ========================================
+  # Leave setting_string BLANK to use manual configuration below
+  # Manual configuration gives you full control and avoids item mapping issues
+  setting_string: ""
+    
+  # Seed (e.g., "AirStrongholdPlantSkipper")
+  # Leave blank for random seed
+  sshdr_seed: ""
+
+
+
+  # ====================================================================================
+
+
+
+  # ========================================
+  # CONFIGURATION METHOD TWO: MANUAL SETTINGS
+  # ========================================
+  
+  
+  # ========================================
+  # CORE LOGIC SETTINGS
+  # ========================================
+  
+  # Logic Rules
+  # all_locations_reachable: Ensures all locations can be reached
+  # beatable_only: Only ensures the game is beatable (some locations may be unreachable)
+  logic_rules: all_locations_reachable
+  
+  # Item Pool Size
+  # minimal: Fewest items
+  # standard: Balanced (default)
+  # extra: More items for variety
+  # plentiful: Maximum items for relaxed gameplay
+  item_pool: standard
+  
+  # ========================================
+  # COMPLETION REQUIREMENTS
+  # ========================================
+  
+  # Number of dungeons required to complete the game (0-6)
+  # Beating Sky Keep is NOT required for this count
+  required_dungeon_count: 2
+  
+  # Must collect the three Triforces to win?
+  triforce_required: true
+  
+  # Where Triforces can appear
+  # vanilla: Original Sky Keep locations
+  # sky_keep: Shuffled within Sky Keep only
+  # anywhere: Shuffled with all other items
+  triforce_shuffle: anywhere
+  
+  # Sword requirement to open the Gate of Time
+  # Options: goddess_sword, goddess_longsword, goddess_white_sword, master_sword, true_master_sword
+  gate_of_time_sword_requirement: true_master_sword
+  
+  # Must beat required dungeons to open Gate of Time?
+  # required: Yes, must beat dungeons
+  # unrequired: Can open without beating dungeons
+  gate_of_time_dungeon_requirements: required
+  
+  # Skip boss encounters at the end
+  imp2_skip: true          # Skip Imprisoned 2
+  skip_horde: false        # Skip The Horde
+  skip_ghirahim3: false    # Skip Ghirahim 3
+  
+  # ========================================
+  # ITEM RANDOMIZATION
+  # ========================================
+  
+  # Toggle item category shuffling
+  gratitude_crystal_shuffle: false      # Shuffle gratitude crystals
+  stamina_fruit_shuffle: false          # Shuffle stamina fruits
+  npc_closet_shuffle: false             # Shuffle NPC closet items
+  hidden_item_shuffle: false            # Shuffle hidden items
+  goddess_chest_shuffle: false          # Shuffle goddess chest items
+  tadtone_shuffle: false                # Shuffle tadtones
+  gossip_stone_treasure_shuffle: false  # Shuffle gossip stone treasures
+  
+  # Rupee Shuffle Difficulty
+  # vanilla: No shuffle
+  # beginner: Easy rupee shuffle
+  # intermediate: Medium difficulty
+  # advanced: Hard rupee shuffle
+  rupee_shuffle: vanilla
+  
+  # Number of trial treasures to shuffle (0-10)
+  trial_treasure_shuffle: 0
+  
+  # ========================================
+  # KEY AND MAP PLACEMENT
+  # ========================================
+  
+  # Small Key Shuffle
+  # own_dungeon: Keys only in their own dungeon (default)
+  # any_dungeon: Keys can be in any dungeon
+  # anywhere: Keys can be anywhere in the world
+  # keysy: Mixed between own dungeon and anywhere
+  small_key_shuffle: own_dungeon
+  
+  # Boss Key Shuffle
+  # own_dungeon: Boss keys only in their own dungeon (default)
+  # any_dungeon: Boss keys can be in any dungeon
+  # anywhere: Boss keys can be anywhere in the world
+  # keysy: Mixed between own dungeon and anywhere
+  boss_key_shuffle: own_dungeon
+  
+  # Dungeon Map Shuffle
+  # vanilla: Maps in original locations (default)
+  # own_dungeon_restricted: Maps restricted to their own dungeon
+  # anywhere: Maps can be anywhere in the world
+  map_shuffle: vanilla
+  
+  # ========================================
+  # ENTRANCE RANDOMIZATION
+  # ========================================
+  
+  # Randomize all area entrances and connections?
+  randomize_entrances: false
+  
+  # Randomize only dungeon entrances?
+  randomize_dungeons: false
+  
+  # Randomize Silent Realm trial entrances?
+  randomize_trials: false
+  
+  # ========================================
+  # STARTING INVENTORY
+  # ========================================
+  
+  # Starting Sword
+  # Options: none, practice_sword, goddess_sword, goddess_longsword,
+  #          goddess_white_sword, master_sword, true_master_sword
+  starting_sword: practice_sword
+  
+  # Number of tablets to start with (0-3)
+  # Tablets are randomly selected when count is 1 or 2
+  # Count 0 or 3 uses all tablets
+  starting_tablets: 0
+  
+  # Start with the Sailcloth?
+  start_with_sailcloth: true
+  
+  # ========================================
+  # CUSTOM STARTING ITEMS
+  # ========================================
+  # Add any item from the item pool to your starting inventory
+  # Format: "Item Name": count
+  # Leave empty {} for no custom items
+  # See Available_Starting_Items.yaml for all available items
+  # 
+  # EXAMPLE - to start with a bomb bag and a small quiver:
+  #   custom_starting_items:
+  #     "Bomb Bag": 1
+  #     "Small Quiver": 1
+  #
+  custom_starting_items: {}
+  
+  # ========================================
+  # QUALITY OF LIFE SETTINGS
+  # ========================================
+  
+  # Skip the intro cutscene and start at Link's room?
+  skip_intro: true
+  
+  # Lake Floria gate open from the start?
+  open_lake_floria_gate: true
+  
+  # Thunderhead open from the start?
+  open_thunderhead: true
+  
+  # Activate bird statues instantly (no animation)?
+  fast_bird_statues: true
+  
+  # Skip Sky Keep door opening cutscene?
+  skip_skykeep_door_cutscene: true
+  
+  # Skip harp playing mini-games?
+  skip_harp_playing: false
+  
+  # Skip miscellaneous small cutscenes?
+  skip_misc_cutscenes: false
+  
+  # ========================================
+  # DIFFICULTY SETTINGS
+  # ========================================
+  
+  # Damage Multiplier
+  # half: 50% damage
+  # normal: 100% damage (default)
+  # double: 200% damage
+  # quadruple: 400% damage
+  # ohko: One-hit knockout
+  damage_multiplier: normal
+  
+  # Fill unreachable locations with junk items?
+  empty_unreachable_locations: false
+  
+  # Don't generate spoiler logs?
+  no_spoiler_log: false
+  
+  # ========================================
+  # ITEM POOL CUSTOMIZATION
+  # ========================================
+  
+  # Add extra junk items (rupees, treasures, etc.)?
+  add_junk_items: false
+  
+  # If add_junk_items is true, what percentage should be junk? (0-100)
+  junk_item_rate: 50
+  
+  # Make sword/beetle/bow progressive (upgrade versions)?
+  progressive_items: true
+  
+  # ========================================
+  # MUSIC AND COSMETICS
+  # ========================================
+  
+  # Music Randomization
+  # vanilla: No music shuffle (default)
+  # shuffled: Background music randomly shuffled
+  # shuffled_limit_vanilla: Minimize unchanged tracks
+  music_randomization: vanilla
+  
+  # If music is randomized, cut off very long songs from game-over screen?
+  cutoff_game_over_music: false
+  
+  # ========================================
+  # ARCHIPELAGO OPTIONS
+  # ========================================
+  
+  # Death Link: When you die, everyone dies (and vice versa)
+  death_link: false

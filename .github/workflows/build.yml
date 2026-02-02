@@ -1,0 +1,100 @@
+name: Build APWorld
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+    
+    - name: Build APWorld
+      run: |
+        python build_apworld.py
+    
+    - name: Verify APWorld structure
+      run: |
+        echo "Verifying sshd.apworld structure..."
+        python -m zipfile -l sshd.apworld | head -20
+        
+        # Check if key files exist in the archive
+        python -c "
+        import zipfile
+        import sys
+        
+        required_files = [
+            'sshd/__init__.py',
+            'sshd/Items.py',
+            'sshd/Locations.py',
+            'sshd/Regions.py',
+            'sshd/Rules.py',
+            'sshd/archipelago.json'
+        ]
+        
+        with zipfile.ZipFile('sshd.apworld', 'r') as zf:
+            archive_files = zf.namelist()
+            missing = [f for f in required_files if f not in archive_files]
+            
+            if missing:
+                print('❌ Missing required files:')
+                for f in missing:
+                    print(f'  - {f}')
+                sys.exit(1)
+            else:
+                print('✅ All required files present in APWorld')
+        "
+    
+    - name: Upload APWorld artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: sshd-apworld
+        path: |
+          sshd.apworld
+          launch_sshd.bat
+          launch_sshd_wrapper.py
+          Skyward Sword HD.yaml
+        retention-days: 90
+    
+    - name: Update Continuous Release
+      if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
+      uses: softprops/action-gh-release@v1
+      with:
+        tag_name: Continuous
+        name: Continuous Build
+        files: |
+          sshd.apworld
+          launch_sshd.bat
+          launch_sshd_wrapper.py
+          Skyward Sword HD.yaml
+        body: |
+          **Automated build from latest commit**
+          
+          This is an automatically generated build from the latest code.
+          For stable releases, see the [Releases](https://github.com/${{ github.repository }}/releases) page.
+          
+          **Commit**: ${{ github.sha }}
+          **Branch**: ${{ github.ref_name }}
+        draft: false
+        prerelease: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
