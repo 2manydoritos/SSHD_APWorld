@@ -745,6 +745,16 @@ class SSHDContext(CommonContext):
                     "locations": list(new_locations)
                 }])
                 logger.info(f"Sent {len(new_locations)} location checks to server")
+                
+                # Check if "Defeat Demise" location (2773238) was just checked - this means victory!
+                DEFEAT_DEMISE_LOCATION = 2773238
+                if DEFEAT_DEMISE_LOCATION in new_locations:
+                    logger.info("=== VICTORY! Demise defeated - sending goal completion to server ===")
+                    await self.send_msgs([{
+                        "cmd": "StatusUpdate",
+                        "status": ClientStatus.CLIENT_GOAL
+                    }])
+                    # Server will automatically release all remaining items if auto-release is enabled
             
         except Exception as e:
             logger.error(f"Error updating game state: {e}")

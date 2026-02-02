@@ -184,6 +184,28 @@ Skyward Sword HD:
   custom_starting_items: {}
   
   # ========================================
+  # TRAP ITEMS
+  # ========================================
+  # Add trap items to the item pool that can you can find or can be sent to you
+  # Traps trigger negative effects when received
+  # Format: "Trap Name": count
+  # Leave empty {} for no traps
+  # 
+  # Available traps:
+  #   - Health Trap: Reduces your health
+  #   - Groose Trap: Groose appears and taunts you
+  #   - Noise Trap: Plays annoying sounds
+  #   - Curse Trap: Applies curse effect
+  #   - Burn Trap: Sets you on fire
+  #
+  # EXAMPLE - to add 5 health traps and 3 groose traps:
+  #   trap_items:
+  #     "Health Trap": 5
+  #     "Groose Trap": 3
+  #
+  trap_items: {}
+  
+  # ========================================
   # QUALITY OF LIFE SETTINGS
   # ========================================
   

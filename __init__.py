@@ -429,7 +429,7 @@ class SSHDWorld(World):
         # These items should NOT be added to the item pool since they're given at start
         starting_items = getattr(self, '_sshd_starting_items', {})
         
-        # Add all progression and useful items first
+        # Add all progression and useful items first (but not traps)
         item_pool = []
         for name, data in ITEM_TABLE.items():
             if data.classification in (IC.progression, IC.useful):
@@ -437,6 +437,13 @@ class SSHDWorld(World):
                 if name in starting_items and starting_items[name] > 0:
                     continue
                 item_pool.append(self.create_item(name))
+        
+        # Add trap items from the option
+        trap_count = 0
+        for trap_name, count in self.options.trap_items.value.items():
+            for _ in range(count):
+                item_pool.append(self.create_item(trap_name))
+                trap_count += 1
         
         # Fill remaining slots with filler items (rupees, hearts, etc.)
         filler_items = [name for name, data in ITEM_TABLE.items() if data.classification == IC.filler]

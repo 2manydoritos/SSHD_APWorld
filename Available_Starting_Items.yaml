@@ -9,13 +9,14 @@ custom_starting_items:
 	"Red Rupee": 1
 	"Heart": 1
 	"10 Arrows": 1
+  # For the Swords: USE `starting_sword:` SETTING INSTEAD OF ADDING TO CUSTOM STARTING ITEMS
 	"Goddess White Sword": 1
 	"Progressive Sword": 1
 	"Goddess Sword": 1
 	"Goddess Longsword": 1
 	"Master Sword": 1
 	"True Master Sword": 1
-	"Sailcloth": 1
+	"Sailcloth": 1 # Use `start_with_sailcloth:` SETTING INSTEAD
 	"Goddess's Harp": 1
 	"Progressive Bow": 1
 	"Clawshots": 1
@@ -169,7 +170,6 @@ custom_starting_items:
 	"Noise Trap": 1
 	"Curse Trap": 1
 	"Burn Trap": 1
-	"Game Beatable": 1
 	"Faron Woods Goddess Cube on West Great Tree near Exit": 1
 	"Faron Woods Goddess Cube on East Great Tree with Clawshots Target": 1
 	"Faron Woods Goddess Cube on East Great Tree with Rope": 1

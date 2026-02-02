@@ -471,6 +471,9 @@ class SSHDOptions(PerGameCommonOptions):
     start_with_sailcloth: StartWithSailcloth
     custom_starting_items: CustomStartingItems
     
+    # Traps
+    trap_items: TrapItems
+    
     # Quality of Life
     open_lake_floria_gate: OpenLakeFloriaGate
     open_thunderhead: OpenThunderhead
