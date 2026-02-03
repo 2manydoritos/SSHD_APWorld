@@ -413,8 +413,7 @@ class SSHDWorld(World):
                                                 self.options.starting_tablets.value)
             sshd_world.setting_map.set_setting("starting_sword",
                                                 self.options.starting_sword.value)
-            sshd_world.setting_map.set_setting("start_with_sailcloth",
-                                                self.options.start_with_sailcloth.value)
+
             
             # Quality of Life
             sshd_world.setting_map.set_setting("open_lake_floria_gate",
@@ -423,10 +422,6 @@ class SSHDWorld(World):
                                                 self.options.open_thunderhead.value)
             sshd_world.setting_map.set_setting("fast_bird_statues",
                                                 self.options.fast_bird_statues.value)
-            sshd_world.setting_map.set_setting("skip_intro",
-                                                self.options.skip_intro.value)
-            sshd_world.setting_map.set_setting("skip_skykeep_door_cutscene",
-                                                self.options.skip_skykeep_door_cutscene.value)
             
             # Difficulty
             sshd_world.setting_map.set_setting("no_spoiler_log",
@@ -447,8 +442,12 @@ class SSHDWorld(World):
             # Extract Path Configuration
             extract_path = self.options.extract_path
             if not extract_path:
-                # Default to C:\ProgramData\Archipelago\sshd_extract
-                extract_path = "C:\\ProgramData\\Archipelago\\sshd_extract"
+                # Use platform-specific default
+                try:
+                    from platform_utils import get_default_sshd_extract_path
+                    extract_path = str(get_default_sshd_extract_path())
+                except ImportError:
+                    extract_path = "C:\\ProgramData\\Archipelago\\sshd_extract"
             
             # Verify extract exists BEFORE attempting patch generation
             from pathlib import Path

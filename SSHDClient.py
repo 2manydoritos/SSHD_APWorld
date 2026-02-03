@@ -18,8 +18,18 @@ from typing import Optional, Set, Dict, Any
 if getattr(sys, 'frozen', False):
     # Running as compiled exe
     bundle_dir = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
-    # Add Archipelago install directory to path
-    archipelago_dir = os.path.join(os.environ.get('PROGRAMDATA', 'C:\\ProgramData'), 'Archipelago')
+    # Add Archipelago install directory to path (cross-platform)
+    try:
+        from platform_utils import get_archipelago_dir
+        archipelago_dir = str(get_archipelago_dir())
+    except ImportError:
+        # Fallback if platform_utils not available
+        if sys.platform == "win32":
+            archipelago_dir = os.path.join(os.environ.get('PROGRAMDATA', 'C:\\ProgramData'), 'Archipelago')
+        elif sys.platform == "linux":
+            archipelago_dir = os.path.expanduser("~/.local/share/Archipelago")
+        else:  # macOS and other
+            archipelago_dir = os.path.expanduser("~/Library/Application Support/Archipelago")
     if os.path.exists(archipelago_dir):
         sys.path.insert(0, archipelago_dir)
 else:
@@ -212,15 +222,27 @@ class RyujinxMemoryReader:
             True if successfully connected, False otherwise
         """
         try:
-            # Find Ryujinx process
+            # Find Ryujinx process (cross-platform)
             ryujinx_process = None
+            
+            # Process names by OS
+            if sys.platform == "win32":
+                process_names = ["Ryujinx.exe"]
+            elif sys.platform == "linux":
+                process_names = ["Ryujinx"]
+            elif sys.platform == "darwin":  # macOS
+                process_names = ["Ryujinx"]
+            else:
+                process_names = ["Ryujinx.exe", "Ryujinx"]  # Try both as fallback
+            
             for proc in psutil.process_iter(['name']):
-                if proc.info['name'] == 'Ryujinx.exe':
+                if proc.info['name'] in process_names:
                     ryujinx_process = proc
                     break
             
             if not ryujinx_process:
-                logger.info("Ryujinx.exe not found. Please start Ryujinx.")
+                expected_names = " or ".join(f"'{name}'" for name in process_names)
+                logger.info(f"Ryujinx process ({expected_names}) not found. Please start Ryujinx.")
                 return False
             
             # Open process
@@ -1389,10 +1411,24 @@ def install_patch(patch_file_path: str) -> tuple[bool, dict]:
                 return False
             
             # Find Ryujinx atmosphere directory for LayeredFS mods
-            ryujinx_paths = [
-                Path.home() / "AppData" / "Roaming" / "Ryujinx" / "sdcard" / "atmosphere" / "contents" / "01002da013484000",
-                Path(os.environ.get('APPDATA', '')) / "Ryujinx" / "sdcard" / "atmosphere" / "contents" / "01002da013484000",
-            ]
+            try:
+                from platform_utils import get_ryujinx_mod_dirs
+                ryujinx_paths = get_ryujinx_mod_dirs()
+            except ImportError:
+                # Fallback if platform_utils not available - use OS-specific paths
+                if sys.platform == "win32":
+                    ryujinx_paths = [
+                        Path.home() / "AppData" / "Roaming" / "Ryujinx" / "sdcard" / "atmosphere" / "contents" / "01002da013484000",
+                        Path(os.environ.get('APPDATA', '')) / "Ryujinx" / "sdcard" / "atmosphere" / "contents" / "01002da013484000",
+                    ]
+                elif sys.platform == "linux":
+                    ryujinx_paths = [
+                        Path.home() / ".config" / "Ryujinx" / "sdcard" / "atmosphere" / "contents" / "01002da013484000",
+                    ]
+                else:  # macOS
+                    ryujinx_paths = [
+                        Path.home() / "Library" / "Application Support" / "Ryujinx" / "sdcard" / "atmosphere" / "contents" / "01002da013484000",
+                    ]
             
             ryujinx_mod_dir = None
             for path in ryujinx_paths:
@@ -1449,7 +1485,12 @@ def install_patch(patch_file_path: str) -> tuple[bool, dict]:
                 print(f"\nExtracted to: {extract_dir}")
                 print(f"\nManual installation:")
                 print(f"  1. Copy the romfs/ and exefs/ folders to:")
-                print(f"     %APPDATA%\\Ryujinx\\sdcard\\atmosphere\\contents\\01002da013484000\\Archipelago\\")
+                try:
+                    from platform_utils import get_ryujinx_dir
+                    ryujinx_manual_path = get_ryujinx_dir() / "sdcard" / "atmosphere" / "contents" / "01002da013484000" / "Archipelago"
+                    print(f"     {ryujinx_manual_path}")
+                except ImportError:
+                    print(f"     %APPDATA%\\Ryujinx\\sdcard\\atmosphere\\contents\\01002da013484000\\Archipelago\\")
                 print(f"  2. Launch Skyward Sword HD in Ryujinx")
                 print(f"  3. The LayeredFS mod will be automatically applied")
                 return False, location_to_item

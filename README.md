@@ -13,11 +13,12 @@ This APWorld allows you to play Skyward Sword HD in a multiworld randomizer with
 - **Full Logic Support**: Ensures you always have items needed to progress
 - **40+ Options**: Customize starting items, logic difficulty, item placement
 - **Custom Logos**: Replace title screen with Archipelago branding
+- **Cross-Platform**: Works on Windows, Linux, and macOS (maybe, I don't have a mac nor do I use Linux)
 
 ## Download
 
 ### Pre-built Release
-Download the latest `sshd.apworld`, `Skyward Sword HD.yaml`, `launch_sshd.bat`, and `launch_sshd_wrapper.py` files from the [Releases](https://github.com/LonLon-Labs/SSHD_APWorld/releases) page.
+Download the latest `sshd.apworld`, `Skyward Sword HD.yaml`, `launch_sshd.bat` (if using Windows), and `launch_sshd_wrapper.py` files from the [Releases](https://github.com/LonLon-Labs/SSHD_APWorld/releases) page.
 
 ### Build from Source
 ```bash
@@ -41,28 +42,36 @@ python build_apworld.py
 
 ### 1. Install the APWorld and other files
 
-Place `sshd.apworld` in one of these locations:
+The APWorld will auto-deploy to the correct location for your OS:
 - **Windows**: `C:\ProgramData\Archipelago\custom_worlds\`
-- **Linux/Mac**: `~/.local/share/Archipelago/custom_worlds/`
+- **Linux**: `~/.local/share/Archipelago/custom_worlds/`
+- **macOS**: `~/Library/Application Support/Archipelago/custom_worlds/`
 
-Place `launch_sshd_wrapper.py` in `C:\ProgramData\Archipelago`
+Or manually place `sshd.apworld` in your platform's custom_worlds folder.
 
-Place `launch_sshd.bat` anywhere (or in `C:\ProgramData\Archipelago` - it works from anywhere)
+Place `launch_sshd_wrapper.py` in the Archipelago folder
+
+If using Windows: Place `launch_sshd.bat` in in the Archipelago folder (or somewhere else - it works from anywhere)
 
 ### 2. Extract Your Game
 
 You'll need a legally obtained copy of Skyward Sword HD for Nintendo Switch along with the update data.
 
 1. Extract the RomFS and ExeFS from your game using Ryujinx (MAKE SURE THE UPDATE IS INSTALLED BEFORE EXTRACTING)
-2. Extract them to `C:\ProgramData\Archipelago\sshd_extract` under a `romfs` and an `exefs` folder
+2. Extract them to your platform's default location:
+   - **Windows**: `C:\ProgramData\Archipelago\sshd_extract\`
+   - **Linux**: `~/.local/share/Archipelago/sshd_extract/`
+   - **macOS**: `~/Library/Application Support/Archipelago/sshd_extract/`
+3. Create `romfs/` and `exefs/` subdirectories with your extracted files
 
 ### 3. Generate Your Seed
 
-1. Download [Skyward Sword HD Randomizer](https://github.com/mint-choc-chip-skyblade/sshd-rando/releases/latest)
-2. Open it and verify the extracted files
-3. Change all of the options to what you would like and copy the Setting String and Seed
-4. Create a YAML file using `Skyward Sword HD.yaml` as a template
-5. Generate locally using all player yamls
+1. Open SkywardSwordHD.yaml for use as a template
+2. Use Method 2 and change all of the options as you wish
+3. Put it in `C:\ProgramData\Archipelago\Players`
+3. Generate locally using all player yamls
+    - Open the Archipelago Launcher and click 'Generate'
+    - The outputed file should be in `C:\ProgramData\Archipelago\output`
 
 #### From here you have 3 options
 1. Upload the outputed zip to [https://archipelago.randomstuff.cc](https://archipelago.randomstuff.cc) (the official website won't work due to a 64MB file upload limit)
@@ -83,7 +92,7 @@ You should see the custom Archipelago logo - that means it's working
 Get into the game far enough to where you can move Link
 
 ### 4. Launch the Client
-Double click `launch_sshd.bat`
+Double click `launch_sshd.bat` if on Windows or run `python launch_sshd_wrapper.py` if on Linux/macOS
 
 ### 5. Play!
 Items you find are automatically sent to other players and vice-versa!

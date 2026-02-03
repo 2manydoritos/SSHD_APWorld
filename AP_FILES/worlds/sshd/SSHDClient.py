@@ -188,15 +188,27 @@ class RyujinxMemoryReader:
             True if successfully connected, False otherwise
         """
         try:
-            # Find Ryujinx process
+            # Find Ryujinx process (cross-platform)
             ryujinx_process = None
+            
+            # Process names by OS
+            if sys.platform == "win32":
+                process_names = ["Ryujinx.exe"]
+            elif sys.platform == "linux":
+                process_names = ["Ryujinx"]
+            elif sys.platform == "darwin":  # macOS
+                process_names = ["Ryujinx"]
+            else:
+                process_names = ["Ryujinx.exe", "Ryujinx"]  # Try both as fallback
+            
             for proc in psutil.process_iter(['name']):
-                if proc.info['name'] == 'Ryujinx.exe':
+                if proc.info['name'] in process_names:
                     ryujinx_process = proc
                     break
             
             if not ryujinx_process:
-                logger.info("Ryujinx.exe not found. Please start Ryujinx.")
+                expected_names = " or ".join(f"'{name}'" for name in process_names)
+                logger.info(f"Ryujinx process ({expected_names}) not found. Please start Ryujinx.")
                 return False
             
             # Open process

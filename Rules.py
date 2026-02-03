@@ -319,8 +319,8 @@ def set_rules(world: "SSHDWorld") -> None:
     
     # Set goal/victory condition
     # The victory is represented by the "Game Beatable" event item at "Defeat Demise" location
-    # The completion condition just needs to check if that event has been collected
-    multiworld.completion_condition[player] = lambda state: has(state, "Game Beatable")
+    # The completion condition checks both the event AND all victory requirements (dungeons, triforce, etc.)
+    multiworld.completion_condition[player] = lambda state: has(state, "Game Beatable") and _can_complete_game(state, world)
 
 
 def _can_complete_game(state: CollectionState, world: "SSHDWorld") -> bool:

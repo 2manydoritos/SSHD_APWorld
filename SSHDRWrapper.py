@@ -209,7 +209,7 @@ def create_sshd_rando_config(settings_dict: Dict[str, Any], output_dir: Path, se
     
     # Now override with archipelago settings
     # Map setting names from archipelago to sshd-rando
-    # NOTE: starting_tablets, starting_sword, start_with_sailcloth are handled separately below
+    # NOTE: starting_tablets, starting_sword are handled separately below
     setting_name_map = {
         "required_dungeon_count": "required_dungeon_count",
         "triforce_required": "triforce_required",
@@ -239,8 +239,7 @@ def create_sshd_rando_config(settings_dict: Dict[str, Any], output_dir: Path, se
         # "start_with_sailcloth": handled manually via starting_inventory below
         "open_lake_floria_gate": "open_lake_floria_gate",
         "open_thunderhead": "open_thunderhead",
-        "fast_bird_statues": "fast_bird_statues",
-        "skip_intro": "skip_intro",
+
         "skip_skykeep_door_cutscene": "skip_skykeep_door_cutscene",
         "skip_harp_playing": "skip_harp_playing",
         "skip_misc_cutscenes": "skip_misc_cutscenes",
@@ -273,7 +272,7 @@ def create_sshd_rando_config(settings_dict: Dict[str, Any], output_dir: Path, se
                 option_index = setting.info.options.index(value_str)
                 setting.update_current_value(option_index)
     
-    # CRITICAL: Manually populate starting_inventory for starting_tablets, starting_sword, and start_with_sailcloth
+    # CRITICAL: Manually populate starting_inventory for starting_tablets and starting_sword
     # The sshd-rando backend uses setting_map.starting_inventory, NOT the settings directly
     # Handle starting_tablets (directly add to starting_inventory)
     if "starting_tablets" in settings_dict:
@@ -308,9 +307,7 @@ def create_sshd_rando_config(settings_dict: Dict[str, Any], output_dir: Path, se
         if sword_level > 0:
             setting_map.starting_inventory["Progressive Sword"] = sword_level
     
-    # Handle start_with_sailcloth (add Sailcloth to starting_inventory if true)
-    if settings_dict.get("start_with_sailcloth", False):
-        setting_map.starting_inventory["Sailcloth"] = 1
+
 
     # Ensure sshd-rando starting_sword setting matches the Archipelago option
     if "starting_sword" in settings_dict and "starting_sword" in setting_map.settings:
@@ -384,7 +381,12 @@ def generate_sshd_rando_mod(settings_dict: Dict[str, Any], output_dir: Path, see
     from logic.config import write_config_to_file
     
     # Check if romfs is extracted (use extract_path from settings_dict)
-    extract_path = Path(settings_dict.get("extract_path", "C:\\ProgramData\\Archipelago\\sshd_extract"))
+    try:
+        from platform_utils import get_default_sshd_extract_path
+        default_path = str(get_default_sshd_extract_path())
+    except ImportError:
+        default_path = "C:\\ProgramData\\Archipelago\\sshd_extract"
+    extract_path = Path(settings_dict.get("extract_path", default_path))
     romfs_path = extract_path / "romfs"
     
     if not romfs_path.exists():

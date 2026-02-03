@@ -248,13 +248,6 @@ class StartingSword(Choice):
     default = 1
 
 
-class StartWithSailcloth(DefaultOnToggle):
-    """
-    Start with the Sailcloth.
-    """
-    display_name = "Start With Sailcloth"
-
-
 class CustomStartingItems(ItemDict):
     """
     Add custom items to starting inventory as a YAML dictionary.
@@ -280,20 +273,6 @@ class OpenThunderhead(DefaultOnToggle):
     If enabled, the Thunderhead is open from the start.
     """
     display_name = "Open Thunderhead"
-
-
-class FastBirdStatues(DefaultOnToggle):
-    """
-    If enabled, bird statues activate immediately without the animation.
-    """
-    display_name = "Fast Bird Statues"
-
-
-class SkipIntro(DefaultOnToggle):
-    """
-    If enabled, skip the intro sequence and start at Link's room.
-    """
-    display_name = "Skip Intro"
 
 
 class SkipSkykeepDoorCutscene(DefaultOnToggle):
@@ -394,11 +373,15 @@ class CutoffGameOverMusic(Toggle):
 class ExtractPath(FreeText):
     """
     Path to the extracted SSHD romfs folder.
-    If not specified, defaults to C:\\ProgramData\\Archipelago\\sshd_extract\\
+    Defaults to:
+    - Windows: C:\\ProgramData\\Archipelago\\sshd_extract
+    - Linux: ~/.local/share/Archipelago/sshd_extract
+    - macOS: ~/Library/Application Support/Archipelago/sshd_extract
+    
     This folder must contain the extracted romfs files from your SSHD ROM.
     """
     display_name = "Extract Path"
-    default = "C:\\\\ProgramData\\\\Archipelago\\\\sshd_extract\\\\"
+    default = ""
 
 
 class SshdrSeed(FreeText):
@@ -468,7 +451,6 @@ class SSHDOptions(PerGameCommonOptions):
     # Starting Inventory
     starting_tablets: StartingTablets
     starting_sword: StartingSword
-    start_with_sailcloth: StartWithSailcloth
     custom_starting_items: CustomStartingItems
     
     # Traps
@@ -477,8 +459,6 @@ class SSHDOptions(PerGameCommonOptions):
     # Quality of Life
     open_lake_floria_gate: OpenLakeFloriaGate
     open_thunderhead: OpenThunderhead
-    fast_bird_statues: FastBirdStatues
-    skip_intro: SkipIntro
     skip_skykeep_door_cutscene: SkipSkykeepDoorCutscene
     skip_harp_playing: SkipHarpPlaying
     skip_misc_cutscenes: SkipMiscCutscenes

@@ -10,7 +10,10 @@ Skyward Sword HD:
   # ========================================
   
   # Path to extracted SSHD ROM (must contain romfs/ and exefs/ folders)
-  extract_path: "C:\\ProgramData\\Archipelago\\sshd_extract"
+  # On Windows: C:\ProgramData\Archipelago\sshd_extract or C:\\ProgramData\\Archipelago\\sshd_extract
+  # On Linux: /home/user/.local/share/Archipelago/sshd_extract
+  # On macOS: /Users/user/Library/Application Support/Archipelago/sshd_extract
+  extract_path: ""
 
 
 
@@ -165,9 +168,6 @@ Skyward Sword HD:
   # Count 0 or 3 uses all tablets
   starting_tablets: 0
   
-  # Start with the Sailcloth?
-  start_with_sailcloth: true
-  
   # ========================================
   # CUSTOM STARTING ITEMS
   # ========================================
@@ -209,17 +209,11 @@ Skyward Sword HD:
   # QUALITY OF LIFE SETTINGS
   # ========================================
   
-  # Skip the intro cutscene and start at Link's room?
-  skip_intro: true
-  
   # Lake Floria gate open from the start?
   open_lake_floria_gate: true
   
   # Thunderhead open from the start?
   open_thunderhead: true
-  
-  # Activate bird statues instantly (no animation)?
-  fast_bird_statues: true
   
   # Skip Sky Keep door opening cutscene?
   skip_skykeep_door_cutscene: true
@@ -242,7 +236,7 @@ Skyward Sword HD:
   # ohko: One-hit knockout
   damage_multiplier: normal
   
-  # Fill unreachable locations with junk items?
+  # Fill unreachable locations with junk items (needs add_junk_items to be true)?
   empty_unreachable_locations: false
   
   # Don't generate spoiler logs?

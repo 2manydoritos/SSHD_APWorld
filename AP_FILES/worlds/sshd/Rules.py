@@ -323,12 +323,8 @@ def set_rules(world: "SSHDWorld") -> None:
                 location.access_rule = lambda state: has(state, "Song of the Hero")
     
     # Set goal/victory condition
-    multiworld.completion_condition[player] = lambda state: has_all(
-        state,
-        "Triforce of Courage",
-        "Triforce of Power",
-        "Triforce of Wisdom"
-    )
+    # Victory requires collecting Game Beatable event (defeating Demise) AND meeting completion requirements
+    multiworld.completion_condition[player] = lambda state: has(state, "Game Beatable") and _can_complete_game(state, world)
     # TODO: Implement dungeon-specific logic
     # TODO: Implement trick-based logic if options enable it
     

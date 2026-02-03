@@ -16,7 +16,7 @@ custom_starting_items:
 	"Goddess Longsword": 1
 	"Master Sword": 1
 	"True Master Sword": 1
-	"Sailcloth": 1 # Use `start_with_sailcloth:` SETTING INSTEAD
+	"Sailcloth": 1
 	"Goddess's Harp": 1
 	"Progressive Bow": 1
 	"Clawshots": 1

@@ -44,6 +44,21 @@ from .Rules import set_rules
 from .rando.ArcPatcher import patch_archipelago_logo
 from .SSHDRWrapper import generate_sshd_rando_mod, extract_location_item_mapping
 
+try:
+    from platform_utils import get_default_sshd_extract_path, get_os_name
+except ImportError:
+    def get_os_name():
+        import sys
+        if sys.platform == "win32":
+            return "windows"
+        elif sys.platform == "linux":
+            return "linux"
+        else:
+            return sys.platform
+    def get_default_sshd_extract_path():
+        from pathlib import Path
+        return Path.home() / ".local" / "share" / "Archipelago" / "sshd_extract"
+
 # Mock args to enable nogui mode before any sshd-rando imports
 class NoGuiArgs:
     nogui = True
@@ -131,9 +146,19 @@ def run_client(*args: str) -> None:
         print("\n" + "=" * 70)
         print("SSHD Client Launch Instructions")
         print("=" * 70)
-        print("\nTo launch the SSHD Client GUI, run this command in a terminal:\n")
-        print("    C:\\ProgramData\\Archipelago\\launch_sshd.bat\n")
-        print("Or double-click: C:\\ProgramData\\Archipelago\\launch_sshd.bat")
+        print("\nTo launch the SSHD Client GUI, run this command in a terminal:")
+        
+        os_name = get_os_name()
+        if os_name == "windows":
+            print("    C:\\ProgramData\\Archipelago\\launch_sshd.bat")
+            print("Or double-click: C:\\ProgramData\\Archipelago\\launch_sshd.bat")
+        elif os_name == "linux":
+            print("    ~/.local/share/Archipelago/launch_sshd.py")
+            print("Or: python launch_sshd.py")
+        elif os_name == "darwin":
+            print("    ~/Library/Application\\ Support/Archipelago/launch_sshd.py")
+            print("Or: python launch_sshd.py")
+        
         print("\nThe client will open in a new window with full GUI support.")
         print("=" * 70 + "\n")
         input("Press Enter to close this window...")
@@ -572,15 +597,17 @@ class SSHDWorld(World):
                     if "sshd_extract" in error_msg or "ObjectPack.arc.LZ" in error_msg or "romfs" in error_msg:
                         print(f"\n" + "="*80)
                         print(f"ERROR: SSHD ROM files not found")
+                        default_path = get_default_sshd_extract_path()
+                        os_name = get_os_name()
                         print(f"="*80)
                         print(f"\nThe SSHD randomizer requires extracted ROM files to generate patches.")
                         print(f"\nTo fix this:")
                         print(f"1. Extract your SSHD ROM (romfs and exefs folders) using a tool like hactool")
-                        print(f"2. Place the extracted files in one of these locations:")
-                        print(f"   - C:\\ProgramData\\Archipelago\\sshd_extract\\romfs")
-                        print(f"   - C:\\ProgramData\\Archipelago\\sshd_extract\\exefs")
+                        print(f"2. Place the extracted files in:") 
+                        print(f"   {default_path}/romfs")
+                        print(f"   {default_path}/exefs")
                         print(f"   OR set 'extract_path' in your YAML to point to your extraction")
-                        print(f"\nCurrent extract path: {self.options.extract_path.value or 'C:\\ProgramData\\Archipelago\\sshd_extract'}")
+                        print(f"\nCurrent extract path: {self.options.extract_path.value or default_path}")
                         print(f"Missing file: {error_msg}")
                         print(f"\nPatch file will only contain item/location mappings (no visual/gameplay changes)")
                         print(f"="*80 + "\n")
@@ -836,7 +863,7 @@ class SSHDWorld(World):
         # Starting Inventory
         settings_dict["starting_tablets"] = self.options.starting_tablets.value
         settings_dict["starting_sword"] = self.options.starting_sword.value
-        settings_dict["start_with_sailcloth"] = bool(self.options.start_with_sailcloth.value)
+
 
         custom_items_value = self.options.custom_starting_items.value
         if isinstance(custom_items_value, dict):
@@ -854,7 +881,7 @@ class SSHDWorld(World):
         settings_dict["impa_sot_hint"] = "off"
         
         # Configuration
-        settings_dict["extract_path"] = self.options.extract_path.value or "C:\\ProgramData\\Archipelago\\sshd_extract"
+        settings_dict["extract_path"] = self.options.extract_path.value or str(get_default_sshd_extract_path())
         settings_dict["setting_string"] = self.options.setting_string.value or ""
         
         return settings_dict

@@ -212,7 +212,20 @@ def build_apworld():
     print()
     
     # Auto-deploy to custom_worlds folder
-    custom_worlds_dir = Path("C:/ProgramData/Archipelago/custom_worlds")
+    try:
+        from platform_utils import get_custom_worlds_dir
+        custom_worlds_dir = get_custom_worlds_dir()
+    except ImportError:
+        import sys
+        if sys.platform == "win32":
+            custom_worlds_dir = Path("C:/ProgramData/Archipelago/custom_worlds")
+        elif sys.platform == "linux":
+            custom_worlds_dir = Path.home() / ".local" / "share" / "Archipelago" / "custom_worlds"
+        else:
+            custom_worlds_dir = Path.home() / "Library" / "Application Support" / "Archipelago" / "custom_worlds"
+    
+    custom_worlds_dir.mkdir(parents=True, exist_ok=True)
+    
     if custom_worlds_dir.exists():
         destination = custom_worlds_dir / "sshd.apworld"
         try:
@@ -228,9 +241,7 @@ def build_apworld():
             print(f"⚠ Warning: Could not auto-deploy - {e}")
     else:
         print(f"⚠ Custom worlds directory not found: {custom_worlds_dir}")
-        print("Manual deployment needed:")
-        print(f"   Copy to: {Path.home() / 'AppData' / 'Local' / 'Archipelago' / 'custom_worlds'}")
-        print("   Or to: C:\\ProgramData\\Archipelago\\lib\\worlds\\")
+        print("Manual deployment needed - copy sshd.apworld to your Archipelago custom_worlds folder")
     
     print()
     print("Next steps:")

@@ -169,20 +169,6 @@ class OpenThunderhead(DefaultOnToggle):
     display_name = "Open Thunderhead"
 
 
-class FastBirdStatues(DefaultOnToggle):
-    """
-    If enabled, bird statues activate immediately without the animation.
-    """
-    display_name = "Fast Bird Statues"
-
-
-class SkipIntro(DefaultOnToggle):
-    """
-    If enabled, skip the intro sequence and start at Link's room.
-    """
-    display_name = "Skip Intro"
-
-
 class SkipSkykeepDoorCutscene(DefaultOnToggle):
     """
     If enabled, skip the Sky Keep door opening cutscene.
@@ -271,7 +257,11 @@ class CutoffGameOverMusic(Toggle):
 class ExtractPath(str):
     """
     Path to the extracted SSHD romfs folder.
-    If not specified, defaults to C:\\ProgramData\\Archipelago\\sshd_extract\\
+    Defaults to:
+    - Windows: C:\\ProgramData\\Archipelago\\sshd_extract
+    - Linux: ~/.local/share/Archipelago/sshd_extract
+    - macOS: ~/Library/Application Support/Archipelago/sshd_extract
+    
     This folder must contain the extracted romfs files from your SSHD ROM.
     """
     display_name = "Extract Path"
@@ -315,8 +305,6 @@ class SSHDOptions(PerGameCommonOptions):
     # Quality of Life
     open_lake_floria_gate: OpenLakeFloriaGate
     open_thunderhead: OpenThunderhead
-    fast_bird_statues: FastBirdStatues
-    skip_intro: SkipIntro
     skip_skykeep_door_cutscene: SkipSkykeepDoorCutscene
     
     # Difficulty

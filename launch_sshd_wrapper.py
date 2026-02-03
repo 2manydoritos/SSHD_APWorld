@@ -1,15 +1,33 @@
 """
-Launcher wrapper for SSHD Archipelago Client
+Launcher wrapper for SSHD Archipelago Client (Cross-platform)
 """
 import zipfile
 import sys
+from pathlib import Path
 
-# Add .apworld to path
-APWORLD_PATH = r'C:\ProgramData\Archipelago\custom_worlds\sshd.apworld'
-sys.path.insert(0, APWORLD_PATH)
+# Find .apworld file (cross-platform)
+try:
+    from platform_utils import get_custom_worlds_dir
+    apworld_dir = get_custom_worlds_dir()
+except ImportError:
+    if sys.platform == "win32":
+        apworld_dir = Path("C:/ProgramData/Archipelago/custom_worlds")
+    elif sys.platform == "linux":
+        apworld_dir = Path.home() / ".local" / "share" / "Archipelago" / "custom_worlds"
+    else:
+        apworld_dir = Path.home() / "Library" / "Application Support" / "Archipelago" / "custom_worlds"
+
+APWORLD_PATH = apworld_dir / "sshd.apworld"
+
+if not APWORLD_PATH.exists():
+    print(f"ERROR: sshd.apworld not found at {APWORLD_PATH}")
+    print(f"Expected location: {apworld_dir}")
+    sys.exit(1)
+
+sys.path.insert(0, str(APWORLD_PATH))
 
 # Extract and execute SSHDClient
-zf = zipfile.ZipFile(APWORLD_PATH)
+zf = zipfile.ZipFile(str(APWORLD_PATH))
 code = zf.read('sshd/SSHDClient.py').decode('utf-8')
 
 # Execute with proper context

@@ -1027,7 +1027,6 @@ def _get_setting_pack_order() -> List[str]:
         'skip_imprisoned_fight',
         'skip_ghirahim_3_fight',
         'skip_demise_fight',
-        'skip_intro',
         'skip_skykeep_door_cutscene',
         'skip_misc_small_cutscenes',
         'starting_pouch_capacity',
@@ -1039,7 +1038,6 @@ def _get_setting_pack_order() -> List[str]:
         'bugsanity',
         'heromode_hp_multiplier',
         'spawn_hearts',
-        'fast_bird_statues',
     ]
 
 
