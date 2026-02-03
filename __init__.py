@@ -336,6 +336,16 @@ class SSHDWorld(World):
                         region
                     )
                     region.locations.append(location)
+
+        # Lock victory location to the Game Beatable event item
+        try:
+            victory_location = self.multiworld.get_location("Hylia's Realm - Defeat Demise", self.player)
+            victory_location.place_locked_item(self.create_item("Game Beatable"))
+            victory_location.event = True
+            victory_location.locked = True
+            victory_location.progress_type = LocationProgressType.EXCLUDED
+        except Exception as e:
+            print(f"[__init__.py] Warning: Could not lock victory location: {e}")
         
         # Connect regions based on REGION_CONNECTIONS
         for source_name, connections in REGION_CONNECTIONS.items():
@@ -448,7 +458,10 @@ class SSHDWorld(World):
                 locked_locations += 1
         
         # Count total locations (excluding events and locked locations)
-        total_locations = len([loc for loc in self.multiworld.get_locations(self.player) if loc.address is not None]) - locked_locations
+        total_locations = len([
+            loc for loc in self.multiworld.get_locations(self.player)
+            if loc.address is not None and not getattr(loc, "event", False)
+        ]) - locked_locations
         
         # Get starting items from sshd-rando world (if available)
         # These items should NOT be added to the item pool since they're given at start
@@ -457,6 +470,8 @@ class SSHDWorld(World):
         # Add all progression and useful items first (but not traps)
         item_pool = []
         for name, data in ITEM_TABLE.items():
+            if name == "Game Beatable":
+                continue
             if data.classification in (IC.progression, IC.useful):
                 # Skip items that are in the starting inventory
                 if name in starting_items and starting_items[name] > 0:

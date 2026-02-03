@@ -402,6 +402,18 @@ class SettingString(FreeText):
     default = ""
 
 
+# === Traps ===
+
+class TrapItems(ItemDict):
+    """
+    Add trap items to the pool as a YAML dictionary.
+    Format: {"Health Trap": count, "Groose Trap": count, "Noise Trap": count, "Curse Trap": count, "Burn Trap": count}
+    Leave empty {} for no trap items.
+    """
+    display_name = "Trap Items"
+    default = {}
+
+
 # === Archipelago-specific ===
 
 class SSHDDeathLink(DeathLink):

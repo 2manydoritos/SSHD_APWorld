@@ -370,14 +370,9 @@ def _can_complete_game(state: CollectionState, world: "SSHDWorld") -> bool:
     # Check Gate of Time sword requirement
     gate_sword_level = options.gate_of_time_sword_requirement.value
     starting_sword_level = options.starting_sword.value
+    required_level = gate_sword_level + 2  # 0=goddess -> level 2, 4=true_master -> level 6
     
-    # Player starts with starting_sword_level, then collects Progressive Swords on top
-    # sword levels: 0=none, 1=practice, 2=goddess, 3=longsword, 4=white, 5=master, 6=true_master
-    # gate_sword_level: 0=goddess, 1=longsword, 2=white, 3=master, 4=true_master
-    # So to reach gate requirement, need: (gate_sword_level + 2) - starting_sword_level Progressive Swords
-    progressive_swords_needed = max(0, (gate_sword_level + 2) - starting_sword_level)
-    
-    if state.count("Progressive Sword", player) < progressive_swords_needed:
+    if _get_sword_level(state, player, starting_sword_level) < required_level:
         return False
     
     # Check Gate of Time dungeon requirements
@@ -389,19 +384,36 @@ def _can_complete_game(state: CollectionState, world: "SSHDWorld") -> bool:
     return True
 
 
-def _has_sword_level(state: CollectionState, player: int, level: int) -> bool:
+def _get_sword_level(state: CollectionState, player: int, starting_level: int) -> int:
+    """Get the highest sword level the player has."""
+    level = starting_level + state.count("Progressive Sword", player)
+    sword_item_levels = {
+        "Goddess Sword": 2,
+        "Goddess Longsword": 3,
+        "Goddess White Sword": 4,
+        "Master Sword": 5,
+        "True Master Sword": 6,
+    }
+    for item_name, item_level in sword_item_levels.items():
+        if state.has(item_name, player):
+            level = max(level, item_level)
+    return level
+
+
+def _has_sword_level(state: CollectionState, player: int, level: int, starting_level: int = 0) -> bool:
     """
     Check if player has at least the specified sword level.
     
     Levels:
-    0 = Practice Sword
-    1 = Goddess Sword
-    2 = Goddess Longsword
-    3 = Goddess White Sword
-    4 = Master Sword
-    5 = True Master Sword
+    0 = None
+    1 = Practice Sword
+    2 = Goddess Sword
+    3 = Goddess Longsword
+    4 = Goddess White Sword
+    5 = Master Sword
+    6 = True Master Sword
     """
-    return state.count("Progressive Sword", player) >= level
+    return _get_sword_level(state, player, starting_level) >= level
 
 
 def _can_access_surface(state: CollectionState, player: int) -> bool:
@@ -417,7 +429,7 @@ def _can_open_gate_of_time(state: CollectionState, world: "SSHDWorld") -> bool:
     
     # Check sword requirement
     sword_level = options.gate_of_time_sword_requirement.value
-    if not _has_sword_level(state, player, sword_level + 1):
+    if not _has_sword_level(state, player, sword_level + 2, options.starting_sword.value):
         return False
     
     # Check dungeon requirement (if enabled)
