@@ -371,7 +371,12 @@ class EventPatchHandler:
         entry_point_hash = entrypoint_hash(
             entry_add["entry"]["name"], len(msbf["FEN1"])
         )
-        msbf["FEN1"][entry_point_hash].append(new_entry)
+        bucket = msbf["FEN1"][entry_point_hash]
+        for existing_entry in bucket:
+            if existing_entry.get("name") == new_entry["name"]:
+                existing_entry["value"] = new_entry["value"]
+                return
+        bucket.append(new_entry)
 
     def text_add(self, msbt: ParsedMsb, text_add: dict, msbt_file_name: str, lang: str):
         text_index = len(msbt["TXT2"])

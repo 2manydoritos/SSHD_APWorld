@@ -1161,11 +1161,15 @@ class SSHDWorld(World):
         
         This is called after sshd-rando patches are generated to replace
         the randomizer logo with Archipelago's custom logo.
+        
+        Args:
+            output_dir: The romfs output directory (already includes 'romfs' in path)
         """
         try:
             # Get paths
             assets_path = Path(__file__).parent / "assets"
-            romfs_output = output_dir / "romfs"
+            # output_dir is already the romfs directory, don't add another "romfs"
+            romfs_output = output_dir
             
             # Get source arc files from sshd-rando extract
             from filepathconstants import ROMFS_EXTRACT_PATH
