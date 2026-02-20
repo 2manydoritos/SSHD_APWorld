@@ -42,7 +42,7 @@ from .Locations import LOCATION_TABLE
 from .SSHD_Options import SSHDOptions
 from .Rules import set_rules
 from .rando.ArcPatcher import patch_archipelago_logo
-from .SSHDRWrapper import generate_sshd_rando_mod, extract_location_item_mapping
+from .SSHDRWrapper import generate_sshd_rando_mod, extract_location_item_mapping, extract_custom_flag_mapping
 
 try:
     from platform_utils import get_default_sshd_extract_path, get_os_name
@@ -469,15 +469,30 @@ class SSHDWorld(World):
                     print(f"  [WARNING] '{item_name}' not found in ITEM_TABLE - skipped")
         
         # Add all progression and useful items first (but not traps)
+        # Track how many of each item we've added to avoid duplicates with starting items
         item_pool = []
+        items_added_count = {}  # item_name -> count added to pool
+        
         for name, data in ITEM_TABLE.items():
             if name == "Game Beatable":
                 continue
             if data.classification in (IC.progression, IC.useful):
-                # Skip items that are in the starting inventory
-                if name in starting_items and starting_items[name] > 0:
-                    continue
-                item_pool.append(self.create_item(name))
+                # Calculate how many copies of this item should be in the pool
+                # ITEM_TABLE only has one entry per item, but some items may need multiple copies
+                # For most items, add 1 copy unless it's in starting inventory
+                starting_count = starting_items.get(name, 0)
+                
+                # For items that can appear multiple times (like Progressive Sword),
+                # we need to check how many total should exist
+                # For now, assume 1 copy per ITEM_TABLE entry unless specified otherwise
+                # (The randomizer backend will handle creating multiple copies of progressives)
+                
+                # Only add if not ALL copies are in starting inventory
+                if starting_count == 0:
+                    item_pool.append(self.create_item(name))
+                    items_added_count[name] = items_added_count.get(name, 0) + 1
+                # If some but not all copies are in starting inventory, still skip
+                # (sshd-rando handles progressive item counts internally)
         
         # Fill remaining slots with filler items (rupees, hearts, etc.)
         filler_items = [name for name, data in ITEM_TABLE.items() if data.classification == IC.filler]
@@ -486,6 +501,12 @@ class SSHDWorld(World):
             # Cycle through filler items
             filler_name = filler_items[len(item_pool) % len(filler_items)]
             item_pool.append(self.create_item(filler_name))
+        
+        print(f"[__init__.py] Created item pool:")
+        print(f"  Total locations: {total_locations}")
+        print(f"  Progression/Useful items: {len([i for i in item_pool if i.classification in (IC.progression, IC.useful)])}")
+        print(f"  Filler items: {len([i for i in item_pool if i.classification == IC.filler])}")
+        print(f"  Starting items (precollected): {sum(starting_items.values())}")
         
         # Add items to the multiworld pool
         self.multiworld.itempool += item_pool
@@ -518,14 +539,33 @@ class SSHDWorld(World):
         
         slot_data["location_to_item_map"] = location_to_item_map
         
-        # Build custom flag to location mapping for location detection
-        # This replicates sshd-rando's custom flag assignment logic
-        custom_flag_to_location = self._build_custom_flag_mapping()
-        slot_data["custom_flag_to_location"] = custom_flag_to_location
+        # Use the ACTUAL custom flag mapping extracted from sshd-rando patches
+        # This mapping was created during patch generation and stored in _actual_custom_flag_mapping
+        # We can't generate it beforehand because custom flags are assigned during patching
+        custom_flag_to_location_names = getattr(self, '_actual_custom_flag_mapping', {})
+        
+        if not custom_flag_to_location_names:
+            print(f"[__init__.py] WARNING: No custom flag mapping found! Falling back to generated mapping")
+            # Fallback to generated mapping (returns location codes directly)
+            custom_flag_to_location_code = self._build_custom_flag_mapping()
+        else:
+            # Convert location names to location codes for the client
+            # The client expects custom_flag -> location_code (not location_name)
+            custom_flag_to_location_code = {}
+            for custom_flag_id, location_name in custom_flag_to_location_names.items():
+                try:
+                    location = self.multiworld.get_location(location_name, self.player)
+                    if location and location.address is not None:
+                        custom_flag_to_location_code[custom_flag_id] = location.address
+                except Exception as e:
+                    print(f"[__init__.py] Warning: Could not find location '{location_name}': {e}")
+        
+        slot_data["custom_flag_to_location"] = custom_flag_to_location_code
+        print(f"[__init__.py] Added {len(custom_flag_to_location_code)} custom flag -> location mappings to slot_data")
         
         # Build reverse mapping: location -> custom_flag for item giving
         # This lets the client set custom flags to trigger vanilla item pickups
-        location_to_custom_flag = {loc: flag for flag, loc in custom_flag_to_location.items()}
+        location_to_custom_flag = {loc_code: flag for flag, loc_code in custom_flag_to_location_code.items()}
         slot_data["location_to_custom_flag"] = location_to_custom_flag
         
         return slot_data
@@ -758,6 +798,14 @@ class SSHDWorld(World):
                 patch_handler.do_all_patches()
                 print("[__init__.py] ✓ Patches applied successfully")
                 
+                # AFTER patches are applied, extract the actual custom flag mapping
+                # This is critical - the custom flags are assigned during patch generation,
+                # so we can't know them until after patches are applied
+                print("[__init__.py] Extracting custom flag assignments from patched world...")
+                actual_custom_flag_mapping = extract_custom_flag_mapping(world)
+                self._actual_custom_flag_mapping = actual_custom_flag_mapping
+                print(f"[__init__.py] Stored {len(actual_custom_flag_mapping)} custom flag assignments for client")
+                
                 # Verify files were created
                 exefs_out = actual_output_dir / "exefs"
                 if exefs_out.exists():
@@ -928,7 +976,12 @@ class SSHDWorld(World):
             # Spawn hearts must be on for Archipelago
             settings_dict["spawn_hearts"] = "on"
             
-            print("[__init__.py] Applied overrides: skip_demise=off, all hints disabled, spawn_hearts=on")
+            # CRITICAL: Progressive items MUST be enabled for Archipelago
+            # Archipelago's item system expects progressive items (Progressive Beetle, Progressive Sword, etc.)
+            # Non-progressive items would break the item pool and cause mismatches
+            settings_dict["progressive_items"] = "on"
+            
+            print("[__init__.py] Applied overrides: skip_demise=off, all hints disabled, spawn_hearts=on, progressive_items=on")
             
             return settings_dict
         
@@ -999,7 +1052,10 @@ class SSHDWorld(World):
         # Advanced Randomization
         settings_dict["enable_back_in_time"] = "on" if self.options.enable_back_in_time.value else "off"
         settings_dict["underground_rupee_shuffle"] = "on" if self.options.underground_rupee_shuffle.value else "off"
-        settings_dict["beedle_shop_shuffle"] = "on" if self.options.beedle_shop_shuffle.value else "off"
+        
+        beedle_shop_map = {0: "vanilla", 1: "junk_only", 2: "randomized"}
+        settings_dict["beedle_shop_shuffle"] = beedle_shop_map[self.options.beedle_shop_shuffle.value]
+        
         settings_dict["random_bottle_contents"] = "on" if self.options.random_bottle_contents.value else "off"
         settings_dict["randomize_shop_prices"] = "on" if self.options.randomize_shop_prices.value else "off"
         
@@ -1231,7 +1287,6 @@ class SSHDWorld(World):
         
         # Locations that should NEVER be replaced with cross-world items
         # These are critical for game progression or story
-        # Note: Fledge's Gift is NOT protected because Progressive Pouch can be a starting item
         PROTECTED_LOCATIONS = set()
         
         location_item_mapping = {}

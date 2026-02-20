@@ -159,7 +159,7 @@ Skyward Sword HD:
   # any_dungeon: Keys can be in any dungeon
   # anywhere: Keys can be anywhere in the world
   # keysy: Mixed between own dungeon and anywhere
-  small_keys: own_dungeon
+  small_key_shuffle: own_dungeon
   
   # Boss Key Shuffle
   # vanilla: Boss Keys will appear in their vanilla locations
@@ -169,7 +169,7 @@ Skyward Sword HD:
   # overworld: Boss Keys will only appear in the overworld
   # anywhere: Boss keys can be anywhere in the world
   # keysy: Mixed between own dungeon and anywhere
-  boss_keys: own_dungeon
+  boss_key_shuffle: own_dungeon
   
   # Dungeon Map Shuffle
   # vanilla: Maps will appear in their vanilla locations (default)
@@ -179,7 +179,7 @@ Skyward Sword HD:
   # own_region: Maps will appear in their dungeon's region
   # overworld: Maps will only appear in the overworld
   # anywhere: Maps can appear anywhere
-  map_mode: vanilla
+  map_shuffle: vanilla
   
   # ========================================
   # ENTRANCE RANDOMIZATION
@@ -188,12 +188,12 @@ Skyward Sword HD:
   # Randomize only dungeon entrances?
   # false: Entering a dungeon will lead to the vanilla dungeon
   # true: Entering a dungeon will lead to a random dungeon
-  randomize_dungeon_entrances: false
+  randomize_dungeons: false
   
   # Randomize Silent Realm trial entrances?
   # false: Entering a Trial Gate will lead to the vanilla Silent Realm
   # true: Entering a Trial Gate will lead to a random Silent Realm
-  randomize_trial_gate_entrances: false
+  randomize_trials: false
   
   # Randomize door entrances (interior and overworld doors)?
   # false: Entering a door will lead to the vanilla exit on the other side
@@ -223,7 +223,7 @@ Skyward Sword HD:
   # Randomize Sky Keep room layout?
   # false: The Sky Keep rooms will start in their vanilla positions
   # true: The Sky Keep rooms will start in a random order
-  randomize_skykeep_layout: false
+  decouple_skykeep_layout: false
   
   # ========================================
   # STARTING INVENTORY
@@ -416,9 +416,10 @@ Skyward Sword HD:
   underground_rupee_shuffle: false
   
   # Beedle's Airshop Shuffle
-  # vanilla: Beedle's Airshop will contain its vanilla items (default)
-  # randomized: Beedle's Airshop can contain any items
-  beedle_shop_shuffle: false
+  # vanilla: Beedle's Airshop will contain its vanilla items
+  # junk_only: Beedle's Airshop will only contain junk items
+  # randomized: Beedle's Airshop can contain any items (default)
+  beedle_shop_shuffle: randomized
   
   # Random Bottle Contents
   # false: There will be 3 Empty Bottles, 1 Revitalizing Potion, and 1 Bottle of Mushroom Spores in the item pool (default)

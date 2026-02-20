@@ -493,11 +493,18 @@ class UndergroundRupeeShufle(Toggle):
     display_name = "Underground Rupee Shuffle"
 
 
-class BeedleShopShuffle(Toggle):
+class BeedleShopShuffle(Choice):
     """
-    If enabled, Beedle's shop will be randomized.
+    Controls what items appear in Beedle's Airshop.
     """
-    display_name = "Beedle Shop Shuffle"
+    display_name = "Beedle's Airshop Shuffle"
+    option_vanilla = 0
+    option_junk_only = 1
+    option_randomized = 2
+    default = 2
+    # Backward compatibility with old boolean format
+    alias_false = 0  # false -> vanilla
+    alias_true = 2   # true -> randomized
 
 
 class RandomBottleContents(Toggle):

@@ -144,19 +144,30 @@ OFFSET_FILE_MANAGER = 0x6288408    # Save file manager (actually at 0x5AEAD44 in
 OFFSET_CURRENT_STAGE = 0x2BF98D8   # Current stage info
 OFFSET_NEXT_STAGE = 0x2BF9904      # Next stage info
 
-# Static flag addresses (absolute, not relative to player)
+# Static flag addresses (absolute, not relative to player) - from cheat table
 OFFSET_STORY_FLAGS_STATIC = 0x182E1F8   # Static story flags (256 bytes)
-OFFSET_SCENE_FLAGS_STATIC = 0x13B100    # Static scene flags (16 bytes)
+OFFSET_SCENE_FLAGS_STATIC = 0x182DF00   # Static scene flags (16 bytes)
 OFFSET_SCENE_FLAGS = 0x9E4              # Scene flags within player structure
-OFFSET_TEMP_FLAGS_STATIC = 0x13B110     # Static temp flags (8 bytes)
-OFFSET_ZONE_FLAGS_STATIC = 0x13B118     # Static zone flags (504 bytes)
-OFFSET_ITEM_FLAGS_STATIC = 0x12E170     # Static item flags (128 bytes)
-OFFSET_DUNGEON_FLAGS_STATIC = 0x12E128  # Static dungeon flags (16 bytes)
+OFFSET_TEMP_FLAGS_STATIC = 0x182DF10    # Static temp flags (8 bytes)
+OFFSET_ZONE_FLAGS_STATIC = 0x182DF18    # Static zone flags (504 bytes)
+OFFSET_ITEM_FLAGS_STATIC = 0x182E170    # Static item flags (128 bytes)
+OFFSET_DUNGEON_FLAGS_STATIC = 0x182E128 # Static dungeon flags (16 bytes)
 
-# File Manager structure (cheat table shows this at +5AEAD44)
-OFFSET_FILE_MANAGER_ACTUAL = 0x5AEAD44  # Actual File Mgr base
-OFFSET_FILE_A_FROM_MANAGER = 0x10       # Offset to File A pointer from File Manager
-OFFSET_FA_STORY_FLAGS = 0x0             # Story flags in save file (File A)
+# File Manager structure (cheat table shows FA at +5AEAD44)
+# NOTE: The cheat table offset 0x5AEAD44 points directly to FA (SaveFile), not to the start of FileMgr
+# FileMgr has: all_save_files (8), save_tails (8), then FA embedded at +0x10
+# But the CT offset already accounts for this, so we use it directly
+OFFSET_SAVEFILE_A = 0x5AEAD54  # Direct offset to FA (SaveFile structure) - from CT: base+0x5AEAD44+0x10
+# SaveFile structure offsets (from cheat table actual addresses)
+OFFSET_FA_STORYFLAGS = 0x18E4          # Story flags in save file (CT: 0x307126AF638 - FA@0x307126AED54 = 0x18E4)
+OFFSET_FA_ITEMFLAGS = 0xA64            # Item flags (CT shows at base+5AEF7B8-5AEAD54)  
+OFFSET_FA_DUNGEONFLAGS = 0xA64         # Dungeon flags (CT shows at base+5AEF7B8-5AEAD54)
+# CORRECTED: Diagnostic scan showed actual sceneflags 0x800 bytes before expected!
+# Scan found flag change at base+0x5AEC7B8 vs expected base+0x5AECFB8
+OFFSET_FA_SCENEFLAGS = 0x1A64          # CORRECTED from 0x2264: actual offset is 0x2264 - 0x800 = 0x1A64
+OFFSET_FA_TBOXFLAGS = 0x28C4           # Treasure box flags [[u8; 4]; 26] (104 bytes)
+OFFSET_FA_TEMPFLAGS = 0x50F4           # Temp flags (CT shows at base+5AF3E48-5AEAD54)
+OFFSET_FA_ZONEFLAGS = 0x50FC           # Zone flags (CT shows at base+5AF3E50-5AEAD54)
 
 # Player structure offsets (relative to OFFSET_PLAYER)
 OFFSET_POS_X = 0x144               # Player X position
@@ -639,6 +650,7 @@ class SSHDContext(CommonContext):
         
         self.memory = RyujinxMemoryReader()
         self.checked_locations: Set[int] = set()
+        self.sent_locations: Set[int] = set()  # Locations already sent to server
         self.item_queue: list = []  # Items waiting to be given
         self.location_to_item: Dict[str, Dict] = {}  # Maps location names to item info from patch
         self.item_to_location: Dict[int, int] = {}  # Maps item code -> location code for tracking
@@ -742,6 +754,12 @@ class SSHDContext(CommonContext):
             
             # Store slot_data for use in building the item-to-location mapping
             self.slot_data = slot_data
+            
+            # Initialize sent_locations with the locations server already knows about
+            # (checked_locations comes from server and includes all previously checked locations)
+            server_checked = args.get("checked_locations", [])
+            self.sent_locations = set(server_checked)
+            logger.debug(f"Server has {len(server_checked)} locations already checked")
             
             # Check world version compatibility
             server_version = slot_data.get("world_version", [0, 0, 0])
@@ -868,6 +886,61 @@ class SSHDContext(CommonContext):
                     self.on_deathlink(data)
                 else:
                     logger.debug(f"[Bounced] Ignoring echo (time={data.get('time')} == last_death_link={self.last_death_link})")
+    
+    def on_print_json(self, args: dict):
+        """
+        Override to show location checks in a pretty format.
+        Shows messages like: "Wesley-SoH found their Prelude of Light (Song from Impa)"
+        """
+        msg_type = args.get("type", "")
+        
+        # Handle ItemSend messages (when someone finds an item/checks a location)
+        if msg_type == "ItemSend":
+            try:
+                receiving_player = args.get("receiving", 0)
+                item = args.get("item", {})
+                
+                # Only show if this concerns our player (our items or items we're receiving)
+                if self.slot_concerns_self(receiving_player):
+                    item_id = item.item if hasattr(item, 'item') else item.get("item", 0)
+                    location_id = item.location if hasattr(item, 'location') else item.get("location", 0)
+                    finding_player = item.player if hasattr(item, 'player') else item.get("player", 0)
+                    item_flags = item.flags if hasattr(item, 'flags') else item.get("flags", 0)
+                    
+                    # Get player name (the one who found the item)
+                    finder_name = self.player_names.get(finding_player, f"Player {finding_player}")
+                    
+                    # Get item and location names
+                    item_name = self.item_names.lookup_in_slot(item_id, receiving_player)
+                    location_name = self.location_names.lookup_in_slot(location_id, finding_player)
+                    
+                    # Determine item color based on flags
+                    if item_flags & 0b001:  # advancement
+                        color = "magenta"
+                    elif item_flags & 0b010:  # useful
+                        color = "cyan"
+                    elif item_flags & 0b100:  # trap
+                        color = "red"
+                    else:
+                        color = "white"
+                    
+                    # Format message differently based on whether it's our own item
+                    if finding_player == self.slot:
+                        # Our own location check
+                        logger.info(f"{finder_name} found their {item_name} ({location_name})")
+                    else:
+                        # Item from another player
+                        receiver_name = self.player_names.get(receiving_player, f"Player {receiving_player}")
+                        logger.info(f"{finder_name} sent {item_name} to {receiver_name} ({location_name})")
+                    
+                    # Still call parent to ensure UI and file logging work
+                    super().on_print_json(args)
+                    return
+            except Exception as e:
+                logger.debug(f"Error formatting ItemSend message: {e}")
+        
+        # For all other messages, use default handling
+        super().on_print_json(args)
     
     def give_item_to_player(self, item_name: str, item_id: int) -> bool:
         """
@@ -1010,21 +1083,24 @@ class SSHDContext(CommonContext):
             # Give queued items to player
             if self.item_queue:
                 item_data = self.item_queue[0]
-                if self.give_item_to_player(item_data["name"], item_data["id"]):
-                    # Successfully gave item
-                    player_name = item_data.get("player_name", "another player")
-                    location_name = item_data.get("location", "unknown location")
-                    is_own_item = (item_data.get("location_player") == self.slot)
-                    
-                    if not is_own_item:
-                        # Received item from another player
-                        logger.info(f"Received {item_data['name']} from {player_name} ({location_name})")
-                    else:
-                        # Received own item
-                        logger.info(f"Received {item_data['name']} ({location_name})")
-                    
-                    # Remove from queue and persist delivery count
+                player_name = item_data.get("player_name", "another player")
+                location_name = item_data.get("location", "unknown location")
+                is_own_item = (item_data.get("location_player") == self.slot)
+                
+                # Skip local items - they're already given by the game when picked up
+                if is_own_item:
+                    logger.debug(f"[ItemQueue] Skipping local item {item_data['name']} from {location_name} (already given in-game)")
                     self.item_queue.pop(0)
+                    self.delivered_item_count += 1
+                    self.save_progress()
+                else:
+                    # Give remote items via Archipelago buffer
+                    if self.give_item_to_player(item_data["name"], item_data["id"]):
+                        # Successfully gave item from another player
+                        logger.info(f"Received {item_data['name']} from {player_name} ({location_name})")
+                        
+                        # Remove from queue and persist delivery count
+                        self.item_queue.pop(0)
                     self.delivered_item_count += 1
                     self.save_progress()
             
@@ -1057,18 +1133,21 @@ class SSHDContext(CommonContext):
                     # NOTE: FLAG_SCENE should work (uses SSHD addresses), but FLAG_STORY has Wii addresses
                     await self.check_all_locations()
             
-            # Send any newly checked locations to server
-            new_locations = self.checked_locations.difference(self.missing_locations)
+            # Send any newly checked locations to server (locations not yet sent)
+            new_locations = self.checked_locations.difference(self.sent_locations)
             if new_locations:
                 await self.send_msgs([{
                     "cmd": "LocationChecks",
                     "locations": list(new_locations)
                 }])
                 
+                # Mark these locations as sent to avoid re-sending
+                self.sent_locations.update(new_locations)
+                
                 # Check if "Defeat Demise" location (2773238) was just checked - this means victory!
                 DEFEAT_DEMISE_LOCATION = 2773238
                 if DEFEAT_DEMISE_LOCATION in new_locations:
-                    logger.info("=== 🎉 VICTORY! Demise defeated - sending goal completion to server ===")
+                    logger.info("=== VICTORY! Demise defeated - sending goal completion to server ===")
                     await self.send_msgs([{
                         "cmd": "StatusUpdate",
                         "status": ClientStatus.CLIENT_GOAL
@@ -1087,71 +1166,133 @@ class SSHDContext(CommonContext):
         # Each flag is a single bit that gets set when a location is checked
         # The mapping from flag ID to location code is provided in slot_data
         
-        # Get FILE_MGR pointer to access sceneflags/dungeonflags
-        file_mgr_ptr = self.memory.read_pointer(OFFSET_FILE_MANAGER)
-        if not file_mgr_ptr:
-            return
+        # Flags are stored as [[u16; 8]; 26] - 26 scenes, each with 8 u16 values (16 bytes per scene)
+        # But we only use 4 specific scenes for custom flags
         
-        # FILE_MGR.FA is at offset 0x10 from FILE_MGR base
-        # sceneflags are at FILE_MGR.FA + 0x0
-        # dungeonflags are at FILE_MGR.FA + some offset (need to determine exact)
-        # For now, use the OFFSET_SCENE_FLAGS_STATIC which points to static sceneflags
+        # Debug: Log every 100 polls to confirm function is running
+        if not hasattr(self, '_flag_check_count'):
+            self._flag_check_count = 0
+            self._successful_reads = 0
+            self._failed_reads = 0
+        self._flag_check_count += 1
         
         for flag_id, location_code in self.custom_flag_to_location.items():
             # Skip if already checked
             if location_code in self.checked_locations:
                 continue
             
-            # Unpack the custom flag from item.rs unpacking logic
-            # Custom flags in sshd-rando use sceneindex and flag number
-            # The flag_id itself encodes both: upper bits = scene, lower bits = flag
-            # Based on item.rs: flag_space_trigger determines if it's sceneflag (0) or dungeonflag (1)
-            
-            # For custom flags, the encoding is:
-            # - Bits 0-6 (0x7F): flag number within the scene
-            # - Bits 7-8: scene index (transformed to one of 6, 13, 16, 19)
+            # Unpack the custom flag encoding from item.rs logic
+            # The flag_id encodes: scene index (bits 7-8), flag number (bits 0-6), flag space (bit 9)
+            #
+            # Encoding:
+            # - Bits 0-6 (0x7F): flag number within the scene (0-127, but we skip 0x7F)
+            # - Bits 7-8: scene index selector (0-3, maps to scenes 6, 13, 16, 19)
             # - Bit 9: flag_space_trigger (0=sceneflag, 1=dungeonflag)
             
             flag_num = flag_id & 0x7F  # Lower 7 bits
             scene_idx_raw = (flag_id >> 7) & 0x03  # Bits 7-8
             flag_space_trigger = (flag_id >> 9) & 0x01  # Bit 9
             
-            # Transform scene index like in item.rs
+            # Transform scene index - these are the actual scene indices in the 26-scene array
             scene_idx_map = {0: 6, 1: 13, 2: 16, 3: 19}
             sceneindex = scene_idx_map.get(scene_idx_raw, 6)
             
-            # Calculate bit position within flag storage
-            # Flags are stored as array[sceneindex][upper_flag] with bits in lower_flag
-            upper_flag = (flag_num & 0xF0) >> 4  # Nibble position (0-15)
-            lower_flag = flag_num & 0x0F  # Bit position within nibble (0-15)
+            # Calculate u16 position and bit position within that u16
+            # Each u16 holds 16 flags (bits 0-15)
+            upper_flag = flag_num // 16  # Which u16 in the scene's 8 u16s (0-7)
+            lower_flag = flag_num % 16   # Which bit in that u16 (0-15)
             
+            # Validate bounds
+            if upper_flag > 7:
+                logger.error(f"Invalid flag {flag_id}: upper_flag={upper_flag} exceeds array bounds (max 7)")
+                continue
+            
+            flag_offset = None  # Initialize for error handling
             try:
-                # Read the appropriate flag byte (need to add base_address!)
-                if flag_space_trigger == 0:
-                    # Scene flag - stored at base + OFFSET_SCENE_FLAGS_STATIC + (sceneindex * 16) + upper_flag
-                    flag_addr = self.memory.base_address + OFFSET_SCENE_FLAGS_STATIC + (sceneindex * 16) + upper_flag
-                    current_byte = self.memory.read_byte(flag_addr)
-                else:
-                    # Dungeon flag - stored at base + OFFSET_DUNGEON_FLAGS_STATIC + (sceneindex * 16) + upper_flag  
-                    flag_addr = self.memory.base_address + OFFSET_DUNGEON_FLAGS_STATIC + (sceneindex * 16) + upper_flag
-                    current_byte = self.memory.read_byte(flag_addr)
+                # Calculate memory address for this specific flag
+                # Read from SaveFile structure where the Rust code actually sets the flags
+                # Rust code: (*FILE_MGR).FA.sceneflags[sceneindex][upper_flag] |= 1 << lower_flag;
+                file_a_offset = OFFSET_SAVEFILE_A
                 
-                if current_byte is not None:
+                # DEBUG: Log addresses on first custom flag check
+                if not hasattr(self, '_logged_addresses'):
+                    logger.info(f"[DEBUG] Base address: 0x{self.memory.base_address:X}")
+                    logger.info(f"[DEBUG] SaveFile FA offset: 0x{file_a_offset:X}")
+                    logger.info(f"[DEBUG] Sceneflags offset within FA: 0x{OFFSET_FA_SCENEFLAGS:X}")
+                    logger.info(f"[DEBUG] Dungeonflags offset within FA: 0x{OFFSET_FA_DUNGEONFLAGS:X}")
+                    self._logged_addresses = True
+                
+                # Calculate flags offset within SaveFile structure
+                if flag_space_trigger == 0:
+                    # Scene flags in save file (where Rust code writes)
+                    flags_base_offset = file_a_offset + OFFSET_FA_SCENEFLAGS
+                else:
+                    # Dungeon flags in save file (where Rust code writes)
+                    flags_base_offset = file_a_offset + OFFSET_FA_DUNGEONFLAGS
+                
+                # Calculate offset within the 26-scene array
+                # Each scene has 16 bytes (8 u16 values)
+                flag_offset = flags_base_offset + (sceneindex * 16) + (upper_flag * 2)
+                
+                # DEBUG: Log first few flag addresses
+                if not hasattr(self, '_logged_flag_calcs'):
+                    self._logged_flag_calcs = []
+                if len(self._logged_flag_calcs) < 3:
+                    logger.info(f"[DEBUG] Flag {flag_id}: scene={sceneindex}, upper={upper_flag}, lower={lower_flag}")
+                    logger.info(f"[DEBUG]   flags_base_offset=0x{flags_base_offset:X}, final offset=0x{flag_offset:X}")
+                    self._logged_flag_calcs.append(flag_id)
+                
+                current_u16 = self.memory.read_short(flag_offset)
+                
+                if current_u16 is not None:
+                    self._successful_reads += 1
                     # Check if the specific bit is set
-                    flag_state = (current_byte >> lower_flag) & 0x1
+                    flag_state = (current_u16 >> lower_flag) & 0x1
                     previous_state = self.previous_custom_flags.get(flag_id, 0)
+                    
+                    # DEBUG: Log first few flag values to see what we're reading
+                    # Log every 50 polls to watch for changes
+                    if len(self._logged_flag_calcs) < 3 and flag_id in self._logged_flag_calcs and self._flag_check_count % 50 == 0:
+                        location_name = self.location_names.lookup_in_slot(location_code, self.slot)
+                        logger.info(f"[FlagValue] flag_id={flag_id}, u16=0x{current_u16:04X}, bit={lower_flag}, "
+                                  f"state={flag_state}, prev={previous_state}, loc={location_name}")
+                    
+                    # LOG ALL NON-ZERO VALUES IMMEDIATELY (not just first 3 flags)
+                    if current_u16 != 0:
+                        location_name = self.location_names.lookup_in_slot(location_code, self.slot)
+                        absolute_address = self.memory.base_address + flag_offset
+                        logger.warning(f"[FlagValue] NON-ZERO! flag_id={flag_id}, u16=0x{current_u16:04X}, bit={lower_flag}, "
+                                     f"state={flag_state}, prev={previous_state}, offset=0x{flag_offset:X}, abs=0x{absolute_address:X}, "
+                                     f"scene={sceneindex}, upper={upper_flag}, loc={location_name}")
                     
                     if flag_state == 1 and previous_state == 0:
                         # Flag was just set - location completed!
                         self.checked_locations.add(location_code)
                         # Get location name for logging
                         location_name = self.location_names.lookup_in_slot(location_code, self.slot)
-                        logger.info(f"Checked {location_name}")
+                        flag_type = "Scene" if flag_space_trigger == 0 else "Dungeon"
+                        logger.info(f"Location checked: {location_name}")
+                        logger.debug(f"   Flag details: type={flag_type}, scene={sceneindex}, flag={flag_num}, u16=0x{current_u16:04X}, bit={lower_flag}")
                     
                     self.previous_custom_flags[flag_id] = flag_state
+                else:
+                    self._failed_reads += 1
+                
+                # Log read statistics every 100 polls
+                if self._flag_check_count % 100 == 0 and flag_id == list(self.custom_flag_to_location.keys())[0]:
+                    logger.debug(f"[CustomFlags] Poll #{self._flag_check_count}: Checked {len(self.custom_flag_to_location)} flags, Success: {self._successful_reads}/{len(self.custom_flag_to_location)}, Failed: {self._failed_reads}/{len(self.custom_flag_to_location)}")
+                    self._successful_reads = 0
+                    self._failed_reads = 0
                     
             except Exception as e:
-                logger.debug(f"Error checking custom flag {flag_id}: {e}")
+                # Suppress repeated errors for the same address to avoid log spam
+                if not hasattr(self, '_error_suppression'):
+                    self._error_suppression = {}
+                error_key = flag_offset if 'flag_offset' in locals() and flag_offset is not None else flag_id
+                if error_key not in self._error_suppression:
+                    addr_str = f"0x{flag_offset:X}" if 'flag_offset' in locals() and flag_offset is not None else "unknown"
+                    logger.error(f"Error reading custom flag {flag_id} at offset {addr_str}: {e}")
+                    self._error_suppression[error_key] = True
     
     async def check_all_locations(self):
         """Check all locations using LocationFlags.py data (Wii addresses - may not work on Switch)."""

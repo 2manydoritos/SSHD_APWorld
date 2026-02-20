@@ -63,6 +63,8 @@ def determine_check_patches(
 
         if "Custom Flag" in location.types:
             custom_flag = custom_flags.pop()
+            # Store the custom flag on the location for Archipelago extraction
+            location.custom_flag = custom_flag
 
         if "Stamina Fruits" in location.types:
             original_itemid = 1

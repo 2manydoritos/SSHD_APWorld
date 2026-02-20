@@ -279,6 +279,59 @@ def create_sshd_rando_config(settings_dict: Dict[str, Any], output_dir: Path, se
                     setting_map.starting_inventory[item_name] = 1
             print(f"[SSHDRWrapper] Added {len(starting_items_list)} items to starting_inventory")
     
+    # Handle excluded_locations from config.yaml (if present)
+    # This is a list of location names that should NOT be randomized
+    if "excluded_locations" in settings_dict:
+        excluded_locs_list = settings_dict["excluded_locations"]
+        if isinstance(excluded_locs_list, list):
+            print(f"[SSHDRWrapper] Processing excluded_locations from config.yaml ({len(excluded_locs_list)} locations)")
+            setting_map.excluded_locations = excluded_locs_list
+            print(f"[SSHDRWrapper] Excluded {len(excluded_locs_list)} locations from randomization")
+    
+    # CRITICAL FIX: Remove Beedle's Airshop locations from excluded_locations if beedle_shop_shuffle is not vanilla
+    # The default excluded_locations includes these shops, but they should only be excluded when shuffle is vanilla
+    beedle_shop_mode = settings_dict.get("beedle_shop_shuffle", "vanilla")
+    if beedle_shop_mode != "vanilla":
+        beedle_shop_locations = [
+            "Beedle's Airshop - 50 Rupee Item",
+            "Beedle's Airshop - First 100 Rupee Item",
+            "Beedle's Airshop - Second 100 Rupee Item",
+            "Beedle's Airshop - Third 100 Rupee Item",
+            "Beedle's Airshop - 300 Rupee Item",
+            "Beedle's Airshop - 600 Rupee Item",
+            "Beedle's Airshop - 800 Rupee Item",
+            "Beedle's Airshop - 1000 Rupee Item",
+            "Beedle's Airshop - 1200 Rupee Item",
+            "Beedle's Airshop - 1600 Rupee Item",
+        ]
+        # Remove shop locations from excluded list
+        original_count = len(setting_map.excluded_locations)
+        setting_map.excluded_locations = [
+            loc for loc in setting_map.excluded_locations
+            if loc not in beedle_shop_locations
+        ]
+        removed_count = original_count - len(setting_map.excluded_locations)
+        if removed_count > 0:
+            print(f"[SSHDRWrapper] Removed {removed_count} Beedle's Airshop locations from excluded_locations (beedle_shop_shuffle={beedle_shop_mode})")
+    
+    # NOTE: excluded_hint_locations is NOT used in Archipelago mode
+    # Archipelago disables all hints (overrides all hint counts to 0), so there's no need
+    # to handle excluded_hint_locations. Gossip stone locations are hint-givers, not item
+    # locations, so they don't exist in sshd-rando's location_table and would cause errors.
+    # If user has excluded_hint_locations in their config.yaml, silently ignore it.
+    if "excluded_hint_locations" in settings_dict:
+        print(f"[SSHDRWrapper] INFO: excluded_hint_locations from config.yaml ignored (Archipelago disables hints)")
+    
+    # Handle mixed_entrance_pools from config.yaml (if present)
+    if "mixed_entrance_pools" in settings_dict:
+        mixed_pools = settings_dict["mixed_entrance_pools"]
+        if isinstance(mixed_pools, list):
+            # Filter out empty lists
+            mixed_pools = [pool for pool in mixed_pools if pool]
+            if mixed_pools:
+                print(f"[SSHDRWrapper] Processing mixed_entrance_pools from config.yaml ({len(mixed_pools)} pools)")
+                setting_map.mixed_entrance_pools = mixed_pools
+    
     # CRITICAL: Manually populate starting_inventory for starting_tablets and starting_sword
     # The sshd-rando backend uses setting_map.starting_inventory, NOT the settings directly
     # Handle starting_tablets (directly add to starting_inventory)
@@ -571,6 +624,37 @@ def extract_location_item_mapping(world: Any) -> Dict[str, str]:
     return location_item_map
 
 
+def extract_custom_flag_mapping(world: Any) -> Dict[int, str]:
+    """
+    Extract the custom_flag → location_name mapping from the generated world.
+    
+    After sshd-rando's checkpatchhandler assigns custom flags to locations,
+    this extracts that mapping so the Archipelago client knows which flags to monitor.
+    
+    Args:
+        world: sshd-rando World object (after patches have been determined)
+    
+    Returns:
+        Dictionary mapping custom_flag_id (int) to location_name (str)
+    """
+    custom_flag_map = {}
+    
+    if not hasattr(world, 'location_table'):
+        print(f"[SSHDRWrapper] Warning: World has no location_table for custom flag extraction")
+        return custom_flag_map
+    
+    # Iterate through all locations and extract custom flags
+    for location_name, location in world.location_table.items():
+        if hasattr(location, 'custom_flag'):
+            custom_flag_id = location.custom_flag
+            # Only store if it's a valid custom flag (not 0x3FF which means "no flag")
+            if custom_flag_id != 0x3FF:
+                custom_flag_map[custom_flag_id] = location_name
+    
+    print(f"[SSHDRWrapper] Extracted {len(custom_flag_map)} custom flag assignments")
+    return custom_flag_map
+
+
 def overlay_multiworld_items(world: Any, location_item_mapping: Dict[str, str]) -> Dict[str, Any]:
     """
     Overlay Archipelago multiworld items onto the sshd-rando generated world.
@@ -596,7 +680,6 @@ def overlay_multiworld_items(world: Any, location_item_mapping: Dict[str, str]) 
     # Locations with hardcoded game logic that MUST keep their original items
     # These locations have event flags tied to specific items that trigger game progression
     PROTECTED_LOCATIONS = {
-        "Fledge's Gift",  # Adventure Pouch - event flag required for game progression
     }
     
     results = {
@@ -638,7 +721,6 @@ def overlay_multiworld_items(world: Any, location_item_mapping: Dict[str, str]) 
     print(f"[SSHDRWrapper] Mapping contains approximately {crossworld_in_mapping} cross-world item entries")
     
     # Iterate through all locations in the mapping
-    shop_locations_skipped = 0
     for location_name, location in world.location_table.items():
         results["total_locations"] += 1
         
@@ -647,12 +729,6 @@ def overlay_multiworld_items(world: Any, location_item_mapping: Dict[str, str]) 
             protected_count += 1
             unmapped_count += 1
             print(f"[SSHDRWrapper] Protected location '{location_name}' - keeping original item")
-            continue
-        
-        # Skip shop locations - they have special item data that can cause issues
-        if "Shop" in location_name or "Beedle" in location_name or "Batreaux" in location_name or "Dodoh" in location_name:
-            shop_locations_skipped += 1
-            unmapped_count += 1
             continue
         
         # Check if this location should have its item replaced
