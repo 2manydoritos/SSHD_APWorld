@@ -6,13 +6,13 @@
     \n\n\n\nBe sure to take care of him.\n...even if he's a little mean."
 
 - name: Archipelago Item Get Text Page 1
-  standard: "You found <y<<string arg0> >> for <b<<string arg1> >>!"
+  standard: "You found <y<<string arg0>>> for <b<<string arg1>>>!"
 
 - name: Archipelago Item Get Text Page 2
   standard: "It should show up in their game after closing this\ntextbox!"
 
 - name: Some Tadtones Collected text
-  standard: "You got a group of <y<Tadtones>>!\nOnly <r<<numeric arg0> >> left to find!"
+  standard: "You got a group of <y<Tadtones>>!\nOnly <r<<numeric arg0>>> left to find!"
 
 - name: All Tadtones Collected text
   standard:
@@ -74,10 +74,10 @@
   standard: "You got some <y<Cold Pumpkin Soup>>!\nThis homemade soup is Pumm's specialty,\nbut someone's let it get cold..."
 
 - name: Five Gratitude crystal counter
-  standard: "You got <r<five>> <y<Gratitude Crystals>>!\nThat is <r<<numeric arg1> >>in total!"
+  standard: "You got <r<five>> <y<Gratitude Crystals>>!\nThat is <r<<numeric arg1>>>in total!"
 
 - name: Single Gratitude crystal counter
-  standard: "You got <r<one>> <y<Gratitude Crystal>>!\nThat is <r<<numeric arg1> >>in total!"
+  standard: "You got <r<one>> <y<Gratitude Crystal>>!\nThat is <r<<numeric arg1>>>in total!"
 
 - name: Skyview Temple Small Key Text
   standard: "You got a <g<Skyview Temple>> Small Key!\nYou have collected <r<<numeric arg1> out of 2>>."

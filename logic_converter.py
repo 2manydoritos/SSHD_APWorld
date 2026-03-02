@@ -603,28 +603,56 @@ class SSHDLogicConverter:
     def _get_excluded_location_types(self) -> set[str]:
         """
         Determine which location types must be EXCLUDED from the AP world.
-        
-        Only truly internal/non-physical location types are excluded here.
-        All real in-game locations (Hidden Items, Rupees, etc.) are always
-        created as AP locations regardless of shuffle settings — any item
-        can be placed at any location that's within logic.
-        
-        Item pool filtering is separate (see __init__.py create_items).
+
+        When a shuffle setting is off, the corresponding locations stay
+        vanilla in-game and must not be AP locations. If they existed as
+        AP locations without their vanilla items in the pool, Archipelago's
+        fill algorithm would place random items there — which is wrong.
+
+        This mirrors sshd-rando-backend's get_disabled_shuffle_locations().
         """
         excluded: set[str] = set()
+        s = self.resolved_settings
 
         # Goddess Cubes are dummy logic items (oarc: null) used internally by
         # sshd-rando to link cube-strike locations to sky Goddess Chests.
         # They have no in-game model and must never be AP locations.
         excluded.add("Goddess Cube")
 
-        # Goddess Chests are the sky-side rewards unlocked by striking Goddess
-        # Cubes. When goddess_chest_shuffle is OFF, both Cubes and Chests are
-        # excluded. When ON, Chests become real AP locations and the Cube-strike
-        # requirements are auto-satisfied via vanilla_items.
-        s = self.resolved_settings
+        # Goddess Chests: excluded unless goddess_chest_shuffle is on
         if s.get("goddess_chest_shuffle", "off") not in ("on", "randomized"):
             excluded.add("Goddess Chests")
+
+        # Simple on/off toggles
+        _TOGGLE_MAP = {
+            "Tadtones":              "tadtone_shuffle",
+            "Gratitude Crystals":    "gratitude_crystal_shuffle",
+            "Stamina Fruits":        "stamina_fruit_shuffle",
+            "Hidden Items":          "hidden_item_shuffle",
+            "Gossip Stone Treasures": "gossip_stone_treasure_shuffle",
+            "Underground Rupees":    "underground_rupee_shuffle",
+        }
+        for loc_type, setting_key in _TOGGLE_MAP.items():
+            val = s.get(setting_key, "off")
+            if val not in ("on", "randomized"):
+                excluded.add(loc_type)
+
+        # NPC Closet shuffle: "vanilla" means off
+        if s.get("npc_closet_shuffle", "vanilla") == "vanilla":
+            excluded.add("Closets")
+
+        # Beedle's Airshop: "vanilla" means off
+        if s.get("beedle_shop_shuffle", "vanilla") == "vanilla":
+            excluded.add("Beedle's Airshop")
+
+        # Rupee shuffle is tiered: vanilla < beginner < intermediate < advanced
+        rupee_val = s.get("rupee_shuffle", "vanilla")
+        if rupee_val == "vanilla":
+            excluded.update(["Beginner Rupees", "Intermediate Rupees", "Advanced Rupees"])
+        elif rupee_val == "beginner":
+            excluded.update(["Intermediate Rupees", "Advanced Rupees"])
+        elif rupee_val == "intermediate":
+            excluded.add("Advanced Rupees")
 
         return excluded
 
@@ -677,10 +705,11 @@ class SSHDLogicConverter:
         Create AP Location objects from LOCATION_TABLE and place them
         into their initial regions. The _build_location_rules step will
         later move them to fine-grained sshd-rando regions.
-        
-        All real in-game locations are created regardless of shuffle settings.
-        Only truly internal types (Goddess Cubes) are excluded.
-        Item pool filtering is handled separately in create_items().
+
+        When a shuffle setting is off, the corresponding locations are
+        excluded from the AP world entirely so Archipelago won't place
+        random items at them. This mirrors get_disabled_shuffle_locations()
+        in the sshd-rando backend.
         """
         try:
             from .Items import ITEM_TABLE as AP_ITEM_TABLE
@@ -696,6 +725,19 @@ class SSHDLogicConverter:
                     yaml_location_areas[loc_name] = area_name
         
         excluded_types = self._get_excluded_location_types()
+
+        # Dusk Relic exclusion: trial_treasure_shuffle is a numeric value (0-10).
+        # Relics whose number exceeds the setting are excluded.
+        # When 0, all Dusk Relic locations are excluded.
+        s = self.resolved_settings
+        trial_treasure_val = s.get("trial_treasure_shuffle", "0")
+        # "random" means all relics are enabled
+        trial_treasure_is_random = trial_treasure_val == "random"
+        try:
+            trial_treasure_num = int(trial_treasure_val) if not trial_treasure_is_random else 999
+        except (ValueError, TypeError):
+            trial_treasure_num = 0
+
         if excluded_types:
             logger.info(f"Excluding location types: {sorted(excluded_types)}")
         
@@ -705,12 +747,20 @@ class SSHDLogicConverter:
             if data.code is None:
                 continue
             
-            # Exclude location types determined by _get_excluded_location_types():
-            # - Goddess Cubes: always excluded (dummy logic items, no in-game model)
-            # - Goddess Chests: excluded unless goddess_chest_shuffle is on
+            # Exclude location types determined by _get_excluded_location_types()
             if excluded_types and any(t in excluded_types for t in data.types):
                 locations_excluded += 1
                 continue
+
+            # Dusk Relic per-location check: exclude relics above the setting number
+            if "Dusk Relic" in data.types and not trial_treasure_is_random:
+                try:
+                    relic_num = int(name.split(" ")[-1])
+                except (ValueError, IndexError):
+                    relic_num = 0
+                if relic_num > trial_treasure_num:
+                    locations_excluded += 1
+                    continue
             
             # Determine which region to place this location in:
             # 1. If sshd-rando YAML defines it in an area, use that area

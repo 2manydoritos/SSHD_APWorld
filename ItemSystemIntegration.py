@@ -42,6 +42,7 @@ class GameOffsets:
     
     # Player
     PLAYER = 0x623E680  # Direct offset to player structure
+    PLAYER_CURRENT_ACTION = 0x468  # dPlayer.current_action (u32, relative to PLAYER)
     
     # Archipelago integration
     # Buffer is allocated as a Rust static variable in item.rs
@@ -49,6 +50,32 @@ class GameOffsets:
     # Each slot: [item_id (u8), flags (u8), reserved (u16)]
     ARCHIPELAGO_BUFFER_SIZE = 16  # Number of slots
     ARCHIPELAGO_BUFFER_SLOT_SIZE = 4  # Bytes per slot
+
+
+# Player actions that indicate the player is "busy" and must NOT be given
+# a new item.  Values match the PLAYER_ACTIONS enum in player.rs.
+# If the Rust-side busy check is active these duplicate the protection,
+# but having both guards is harmless and the Python check lets us skip
+# the buffer write entirely (faster retry).
+BUSY_PLAYER_ACTIONS = frozenset([
+    0x4A,  # DIE
+    0x4B,  # REVIVE
+    0x58,  # INTERACT
+    0x6E,  # USING_DOOR
+    0x6F,  # USE_DDOOR
+    0x77,  # ZEV_EVENT_MAYBE  (cutscene / event)
+    0x78,  # ITEM_GET
+    0x7B,  # RELATED_TO_NEW_SWORD_IN_CS_
+    0x7D,  # OPEN_CHEST
+    0x86,  # SWORD_IN_DIAL
+    0x8A,  # ON_BIRD  (flying Loftwing)
+    0x91,  # RECEIVE_GODDESS_FRUIT
+    0x93,  # SLEEPING
+    0xAF,  # PLACE_TABLET
+    0xB4,  # ENTER_GODDESS_WALL
+    0xB6,  # EXIT_GODDESS_WALL
+    0xB7,  # SPIRIT_VESSEL_CHEST_EXIT
+])
 
 
 class GameItemSystem:
@@ -70,6 +97,14 @@ class GameItemSystem:
         self.buffer_addr = None  # Will be found dynamically
         self.timeout_frames = 300  # 5 seconds at 60 FPS
         
+        # Buffer address cycling: store ALL valid candidate addresses
+        self._candidate_buffer_addrs: list = []  # All prescan hits with valid magic
+        self._current_buffer_index: int = 0  # Which candidate we're currently using
+        
+        # Failure tracking for automatic buffer re-discovery
+        self._consecutive_failures: int = 0
+        self.MAX_FAILURES_BEFORE_CYCLE = 3  # Try next buffer address after this many failures
+        
     def _find_buffer_address(self) -> Optional[int]:
         """
         Find the Archipelago buffer address by scanning for magic signature.
@@ -81,6 +116,9 @@ class GameItemSystem:
         First checks addresses cached by the base-address scan (prescan_results)
         so this is typically instantaneous.  Falls back to a full process scan
         only if the cache missed.
+        
+        Collects ALL valid candidate addresses so we can cycle between them
+        if the first one turns out to be the wrong buffer.
         
         Returns:
             Buffer address OFFSET (relative to base) if found, None otherwise
@@ -95,15 +133,25 @@ class GameItemSystem:
         # --- Fast path: use addresses cached during the base-address scan ---
         prescan = getattr(self.memory, 'prescan_results', {})
         cached = prescan.get("AP_ITEM_BUFFER", [])
+        
+        # Collect ALL valid candidates, not just the first
+        self._candidate_buffer_addrs = []
         for addr in cached:
             buffer_offset = addr - base_address
             try:
                 test_data = self.memory.read_bytes(buffer_offset, 4)
                 if test_data == magic_signature:
-                    logger.info(f"✅ Found Archipelago buffer at 0x{addr:x} (offset 0x{buffer_offset:x}) [prescan cache]")
-                    return buffer_offset
+                    self._candidate_buffer_addrs.append(buffer_offset)
             except Exception:
                 continue
+        
+        if self._candidate_buffer_addrs:
+            self._current_buffer_index = 0
+            chosen = self._candidate_buffer_addrs[0]
+            abs_addr = base_address + chosen
+            logger.info(f"✅ Found Archipelago buffer at 0x{abs_addr:x} (offset 0x{chosen:x}) [prescan cache]")
+            logger.info(f"   {len(self._candidate_buffer_addrs)} candidate buffer address(es) available")
+            return chosen
         
         # --- Slow path: full process scan ---
         logger.info("Scanning entire process memory for Archipelago buffer magic signature...")
@@ -230,14 +278,61 @@ class GameItemSystem:
             logger.error(f"Failed to write flags to buffer slot {slot}")
             return False
         
-        # Read back to verify write
+        # Read back to verify the write actually stuck.
+        # There is a small race window where the Rust main-loop can process
+        # and clear the slot between our write and readback.  If readback_id
+        # is 0 but we just wrote a non-zero value, the write was likely lost
+        # (wrong buffer address, game not loaded, etc.).  We treat this as a
+        # failure so the caller retries.
         readback_id = self.memory.read_byte(buffer_offset)
         readback_flags = self.memory.read_byte(buffer_offset + 1)
         logger.info(f"Wrote item {item_id} to buffer slot {slot} with flags {flags:02x} (readback: id={readback_id}, flags={readback_flags:02x})")
         logger.info(f"Buffer address: base+0x{self.buffer_addr:x} = 0x{self.memory.base_address + self.buffer_addr:x}")
+
+        if readback_id != item_id:
+            logger.warning(
+                f"Readback mismatch: wrote item_id={item_id}, read back {readback_id}. "
+                f"Buffer may be stale or incorrect — will retry."
+            )
+            # Clear the slot to be safe
+            self.memory.write_byte(buffer_offset, 0)
+            self.memory.write_byte(buffer_offset + 1, 0)
+            return False
         
         # Wait for game to process (buffer cleared when done)
-        return self._wait_for_item_processed(buffer_offset)
+        success = self._wait_for_item_processed(buffer_offset, expected_item_id=item_id)
+        
+        if success:
+            self._consecutive_failures = 0
+        else:
+            self._consecutive_failures += 1
+            if (self._consecutive_failures >= self.MAX_FAILURES_BEFORE_CYCLE 
+                    and len(self._candidate_buffer_addrs) > 1):
+                self._cycle_to_next_buffer()
+        
+        return success
+    
+    def _cycle_to_next_buffer(self):
+        """
+        Switch to the next candidate buffer address after repeated failures.
+        
+        This handles the case where the prescan found multiple copies of the
+        magic signature and the first one isn't the real game buffer.
+        """
+        old_index = self._current_buffer_index
+        self._current_buffer_index = (self._current_buffer_index + 1) % len(self._candidate_buffer_addrs)
+        self.buffer_addr = self._candidate_buffer_addrs[self._current_buffer_index]
+        self._consecutive_failures = 0
+        
+        # Clear ALL slots in the new buffer to start fresh
+        self.clear_buffer()
+        
+        abs_addr = (self.memory.base_address or 0) + self.buffer_addr
+        logger.warning(
+            f"[BufferCycle] Switching from candidate {old_index + 1} to "
+            f"{self._current_buffer_index + 1}/{len(self._candidate_buffer_addrs)} "
+            f"(new buffer at 0x{abs_addr:x}, offset 0x{self.buffer_addr:x})"
+        )
     
     def give_item_by_name(self, item_name: str) -> bool:
         """
@@ -283,10 +378,37 @@ class GameItemSystem:
                 return slot
         return None
     
-    def _wait_for_item_processed(self, buffer_offset: int) -> bool:
-        """Wait for game to process item (clear buffer slot)."""
-        # Log first few reads to debug
-        for frame in range(self.timeout_frames):
+    def _wait_for_item_processed(self, buffer_offset: int, expected_item_id: int = 0) -> bool:
+        """Wait for game to process item (clear buffer slot).
+        
+        Args:
+            buffer_offset: Absolute offset into process memory for this slot
+            expected_item_id: The item_id we wrote; used to detect a failed write.
+        """
+        # --- First poll: verify the item is actually in the buffer ----------
+        # If the very first read already shows item_id == 0 AND the expected
+        # id was non-zero, the write never reached the game buffer (wrong
+        # buffer address, race condition, etc.).  Report failure so the
+        # caller can retry rather than silently losing the item.
+        first_id = self.memory.read_byte(buffer_offset)
+        first_flags = self.memory.read_byte(buffer_offset + 1)
+        logger.info(f"[POLL FRAME 0] Buffer slot: item_id={first_id}, flags={first_flags:02x}")
+
+        if first_id == 0 and expected_item_id != 0:
+            # The slot is already empty before the game had a chance to run a
+            # single frame.  This almost certainly means the write was lost.
+            logger.warning(
+                f"Buffer slot was empty on first poll (expected item {expected_item_id}). "
+                f"Write may have been lost — will retry."
+            )
+            return False
+
+        if first_id == 0:
+            logger.info("Item processed after 0 frames")
+            return True
+
+        # --- Normal polling loop (frames 1+) --------------------------------
+        for frame in range(1, self.timeout_frames):
             time.sleep(1.0 / 60.0)  # ~60 FPS
             
             item_id = self.memory.read_byte(buffer_offset)
@@ -296,27 +418,29 @@ class GameItemSystem:
                 logger.info(f"[POLL FRAME {frame}] Buffer slot: item_id={item_id}, flags={flags:02x}")
             
             if item_id == 0:
-                # Buffer cleared - item was processed
+                # Buffer cleared - item was processed by the game
                 logger.info(f"Item processed after {frame} frames")
                 return True
         
         logger.error(f"Item processing timeout after {self.timeout_frames} frames")
-        # Clear buffer to prevent stuck state
-        self.memory.write_byte(buffer_offset, 0)
+        # Clear BOTH item_id and flags to fully reset the slot
+        self.memory.write_byte(buffer_offset, 0)      # item_id
+        self.memory.write_byte(buffer_offset + 1, 0)   # flags
         return False
     
     def _is_player_ready(self) -> bool:
-        """Check if player is in valid state to receive items."""
+        """Check if player is in valid state to receive items.
+        
+        Returns False when:
+        - Base address is not set (game not attached)
+        - Buffer has not been located yet
+        - Player is in a busy action (item-get, cutscene, chest, etc.)
+        """
         # Get current base address from memory accessor
         base_address = getattr(self.memory, 'base_address', None)
         if not base_address:
             logger.debug("Player not ready: base_address is None")
             return False
-        
-        # NOTE: Stage offset check removed because Rust additions in subsdk8 shift memory offsets
-        # The cheat table offsets (0x2BF98D8) are for vanilla game, not modded game
-        # The Rust buffer polling code (archipelago_check_item_buffer) handles all safety checks
-        # So we just verify base address exists and buffer is accessible
         
         # Verify buffer is accessible (this ensures game is loaded enough)
         if self.buffer_addr is None:
@@ -324,6 +448,22 @@ class GameItemSystem:
             if self.buffer_addr is None:
                 logger.debug("Player not ready: Buffer not found")
                 return False
+        
+        # ---- Player action busy-state check --------------------------------
+        # Read the player's current action and reject if it's one of the
+        # "busy" states where giving an item would be lost or cause issues.
+        try:
+            action_offset = GameOffsets.PLAYER + GameOffsets.PLAYER_CURRENT_ACTION
+            current_action = self.memory.read_int(action_offset)
+            if current_action is not None and current_action in BUSY_PLAYER_ACTIONS:
+                logger.debug(
+                    f"Player not ready: current action 0x{current_action:X} is busy"
+                )
+                return False
+        except Exception as e:
+            # If we can't read the action, err on the side of caution and
+            # allow the item — the Rust-side busy check is the real safety net.
+            logger.debug(f"Could not read player action: {e}")
         
         logger.debug("Player ready check passed (base address + buffer accessible)")
         return True

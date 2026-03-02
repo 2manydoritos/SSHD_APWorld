@@ -146,6 +146,38 @@ except ImportError:
         logger.warning("ItemSystemIntegration not found - falling back to direct memory writes")
 
 
+# Beedle's Airshop detection constants
+# Purchase storyflags are injected into 105-Terry.msbf flows at build time.
+# At runtime, the client reads SHOP_ITEMS[N].event_entrypoint from memory,
+# converts to a FEN1 name (e.g. 10531 -> "105_31"), and looks up the
+# corresponding storyflag to dynamically map storyflag -> AP location.
+BEEDLE_PURCHASE_STORYFLAGS = {
+    "105_05": 1950,  "105_08": 1951,  "105_09": 1952,   # Pouch flows
+    "105_31": 1953,  "105_32": 1954,  "105_33": 1955,   # Non-pouch flows
+    "105_34": 1956,  "105_35": 1957,  "105_36": 1958,
+    "105_37": 1959,  "105_38": 1960,
+    "105_39": 1961,  "105_40": 1962,                     # Rando-added flows
+}
+
+SHOP_INDEX_TO_LOCATION = {
+    20: "Beedle's Airshop - 300 Rupee Item",
+    21: "Beedle's Airshop - 600 Rupee Item",
+    22: "Beedle's Airshop - 1200 Rupee Item",
+    23: "Beedle's Airshop - 1600 Rupee Item",
+    24: "Beedle's Airshop - First 100 Rupee Item",
+    25: "Beedle's Airshop - 50 Rupee Item",
+    26: "Beedle's Airshop - 800 Rupee Item",
+    27: "Beedle's Airshop - 1000 Rupee Item",
+    28: "Beedle's Airshop - Second 100 Rupee Item",
+    29: "Beedle's Airshop - Third 100 Rupee Item",
+}
+
+# SHOP_ITEMS memory layout
+OFFSET_SHOP_ITEMS = 0x163C43C   # SHOP_ITEMS table base offset from game base
+SHOP_ITEM_SIZE = 0x54           # Size of each SHOP_ITEMS entry
+SHOP_ITEM_EVENT_EP_FIELD = 0x10 # event_entrypoint field offset (u16 LE)
+SHOP_ITEM_SOLD_OUT_SF_FIELD = 0x52  # sold_out_storyflag field offset (u16 LE)
+
 # Memory signature to find SSHD base address
 MEMORY_SIGNATURE = bytes.fromhex("00000000080000004D4F443088BD8101")
 
@@ -173,7 +205,7 @@ OFFSET_DUNGEON_FLAGS_STATIC = 0x182E128 # Static dungeon flags (16 bytes)
 # But the CT offset already accounts for this, so we use it directly
 OFFSET_SAVEFILE_A = 0x5AEAD54  # Direct offset to FA (SaveFile structure) - from CT: base+0x5AEAD44+0x10
 # SaveFile structure offsets (from cheat table actual addresses)
-OFFSET_FA_STORYFLAGS = 0x18E4          # Story flags in save file (CT: 0x307126AF638 - FA@0x307126AED54 = 0x18E4)
+OFFSET_FA_STORYFLAGS = 0x8E4            # Story flags in save file (CT: 0x307126AF638 - FA@0x307126AED54 = 0x8E4)
 OFFSET_FA_ITEMFLAGS = 0xA64            # Item flags (CT shows at base+5AEF7B8-5AEAD54)  
 OFFSET_FA_DUNGEONFLAGS = 0xA64         # Dungeon flags (CT shows at base+5AEF7B8-5AEAD54)
 # CORRECTED: Diagnostic scan showed actual sceneflags 0x800 bytes before expected!
@@ -393,6 +425,15 @@ class RyujinxMemoryReader:
         "AP_ITEM_BUFFER":     bytes([0x41, 0x50, 0x00, 0x01]),  # "AP\x00\x01"
     }
 
+    # --- Connection health thresholds ---
+    # After this many consecutive memory operation failures, the base address
+    # is considered invalid and a rescan will be triggered.
+    HEALTH_FAILURE_THRESHOLD = 100
+    # Minimum seconds between error log bursts (throttle identical errors)
+    ERROR_LOG_INTERVAL = 10.0
+    # Minimum seconds between full pattern_scan_all retries per buffer
+    SCAN_NEGATIVE_CACHE_SECS = 30.0
+
     def __init__(self):
         self.pm: Optional[pymem.Pymem] = None
         self.base_address: Optional[int] = None
@@ -400,7 +441,76 @@ class RyujinxMemoryReader:
         # Absolute addresses found during the base-address scan for each magic
         # pattern.  Keyed by pattern name -> list of absolute addresses.
         self.prescan_results: Dict[str, list] = {}
-        
+
+        # --- Connection health monitoring ---
+        self._consecutive_failures: int = 0
+        self._total_ops: int = 0
+        self._total_failures: int = 0
+        self._last_successful_op: float = 0.0
+        self._error_log_time: float = 0.0
+        self._errors_since_log: int = 0
+        # Negative cache: buffer name -> timestamp of last failed full scan
+        self._scan_negative_cache: Dict[str, float] = {}
+
+    # ------------------------------------------------------------------
+    # Connection health helpers
+    # ------------------------------------------------------------------
+
+    def _record_success(self):
+        """Record a successful memory operation and reset failure streak."""
+        self._consecutive_failures = 0
+        self._total_ops += 1
+        self._last_successful_op = time.time()
+
+    def _record_failure(self, operation: str, offset: int, error: Exception):
+        """Record a failed memory operation with throttled logging.
+
+        Instead of logging every single failure (which can produce thousands
+        of lines per second), we aggregate error counts and emit a summary
+        line at most once every ERROR_LOG_INTERVAL seconds.
+        """
+        self._consecutive_failures += 1
+        self._total_ops += 1
+        self._total_failures += 1
+        self._errors_since_log += 1
+
+        now = time.time()
+        if now - self._error_log_time >= self.ERROR_LOG_INTERVAL:
+            logger.debug(
+                f"Memory errors: {self._errors_since_log} failures in "
+                f"{now - self._error_log_time:.1f}s "
+                f"(last: {operation} at 0x{offset:X}, "
+                f"consecutive: {self._consecutive_failures}, "
+                f"total: {self._total_failures}/{self._total_ops})"
+            )
+            self._error_log_time = now
+            self._errors_since_log = 0
+
+    def is_healthy(self) -> bool:
+        """Return True if the memory connection is healthy.
+
+        The connection is considered *unhealthy* when there have been more
+        than HEALTH_FAILURE_THRESHOLD consecutive failures without a single
+        success.  This strongly indicates the base address is a false
+        positive and a rescan is needed.
+        """
+        return self._consecutive_failures < self.HEALTH_FAILURE_THRESHOLD
+
+    def invalidate_base(self):
+        """Reset the base address and related caches to force a rescan."""
+        old = self.base_address
+        self.base_address = None
+        self.prescan_results = {}
+        self._scan_negative_cache = {}
+        self._consecutive_failures = 0
+        self._errors_since_log = 0
+        self._total_failures = 0
+        self._total_ops = 0
+        if old is not None:
+            logger.warning(
+                f"Invalidated base address 0x{old:X} — will rescan on next cycle"
+            )
+
     def connect(self) -> bool:
         """
         Connect to the Ryujinx process.
@@ -783,7 +893,7 @@ class RyujinxMemoryReader:
                         probe = self.pm.read_bytes(it_addr, 4)
                         if probe == it_magic:
                             magic_hits["AP_ITEM_INFO_TABLE"].append(it_addr)
-                            print(f"[PRESCAN] AP_ITEM_INFO_TABLE: derived from AP_CHECK_STATS at 0x{it_addr:X}")
+                            logging.debug(f"[PRESCAN] AP_ITEM_INFO_TABLE: derived from AP_CHECK_STATS at 0x{it_addr:X}")
                             break  # one reliable hit is enough
                     except Exception:
                         pass
@@ -798,7 +908,7 @@ class RyujinxMemoryReader:
                         probe = self.pm.read_bytes(cs_addr, 4)
                         if probe == cs_magic:
                             magic_hits["AP_CHECK_STATS"].append(cs_addr)
-                            print(f"[PRESCAN] AP_CHECK_STATS: derived from AP_ITEM_INFO_TABLE at 0x{cs_addr:X}")
+                            logging.debug(f"[PRESCAN] AP_CHECK_STATS: derived from AP_ITEM_INFO_TABLE at 0x{cs_addr:X}")
                             break
                     except Exception:
                         pass
@@ -808,16 +918,33 @@ class RyujinxMemoryReader:
 
             for mname, maddrs in magic_hits.items():
                 if maddrs:
-                    print(f"[PRESCAN] {mname}: {len(maddrs)} hit(s), first at 0x{maddrs[0]:X}")
+                    logging.debug(f"[PRESCAN] {mname}: {len(maddrs)} hit(s), first at 0x{maddrs[0]:X}")
                 else:
-                    print(f"[PRESCAN] {mname}: no hits")
+                    logging.debug(f"[PRESCAN] {mname}: no hits")
+
+            # ------------------------------------------------------------------
+            # Post-scan sanity check: if the prescan found ZERO magic buffer
+            # hits in ±2 GB around the base address and the score wasn't
+            # perfect, the base is very likely a false positive (e.g. a stale
+            # signature copy left in an unrelated heap region).  Log an
+            # explicit warning so the health monitor knows to expect trouble.
+            # ------------------------------------------------------------------
+            all_empty = all(len(v) == 0 for v in magic_hits.values())
+            if all_empty and best_score < 8:
+                logger.warning(
+                    f"Base address 0x{best_base:X} scored only {best_score}/8 "
+                    f"and no Rust magic buffers (IT/CS/AP) were found nearby. "
+                    f"This may be a stale/false-positive signature. "
+                    f"The health monitor will rescan automatically if "
+                    f"subsequent memory operations keep failing."
+                )
 
             logger.info(f"Found SSHD base address: 0x{best_base:X} (score: {best_score}/8, took {total_elapsed:.1f}s)")
             
             return True
 
         except Exception as e:
-            print(f"[ERROR] Exception during scan: {e}")
+            logger.error(f"[ERROR] Exception during scan: {e}")
             logger.error(f"Error scanning memory: {e}")
             import traceback
             traceback.print_exc()
@@ -829,9 +956,10 @@ class RyujinxMemoryReader:
             return None
         try:
             data = self.pm.read_bytes(self.base_address + offset, 4)
+            self._record_success()
             return struct.unpack('<f', data)[0]
         except Exception as e:
-            # Suppress repetitive error logging - normal when memory isn't loaded yet
+            self._record_failure("read_float", offset, e)
             return None
     
     def read_int(self, offset: int) -> Optional[int]:
@@ -840,9 +968,10 @@ class RyujinxMemoryReader:
             return None
         try:
             data = self.pm.read_bytes(self.base_address + offset, 4)
+            self._record_success()
             return struct.unpack('<I', data)[0]
         except Exception as e:
-            logger.debug(f"Error reading int at 0x{offset:X}: {e}")
+            self._record_failure("read_int", offset, e)
             return None
     
     def read_short(self, offset: int) -> Optional[int]:
@@ -851,9 +980,10 @@ class RyujinxMemoryReader:
             return None
         try:
             data = self.pm.read_bytes(self.base_address + offset, 2)
+            self._record_success()
             return struct.unpack('<H', data)[0]
         except Exception as e:
-            logger.debug(f"Error reading short at 0x{offset:X}: {e}")
+            self._record_failure("read_short", offset, e)
             return None
     
     def read_byte(self, offset: int) -> Optional[int]:
@@ -861,9 +991,11 @@ class RyujinxMemoryReader:
         if not self.base_address or not self.pm:
             return None
         try:
-            return self.pm.read_uchar(self.base_address + offset)
+            val = self.pm.read_uchar(self.base_address + offset)
+            self._record_success()
+            return val
         except Exception as e:
-            # Suppress repetitive error logging - these are normal when memory isn't loaded yet
+            self._record_failure("read_byte", offset, e)
             return None
     
     def read_string(self, offset: int, length: int = 32) -> Optional[str]:
@@ -872,13 +1004,14 @@ class RyujinxMemoryReader:
             return None
         try:
             data = self.pm.read_bytes(self.base_address + offset, length)
+            self._record_success()
             # Find null terminator
             null_pos = data.find(b'\x00')
             if null_pos != -1:
                 data = data[:null_pos]
             return data.decode('utf-8', errors='ignore')
         except Exception as e:
-            logger.debug(f"Error reading string at 0x{offset:X}: {e}")
+            self._record_failure("read_string", offset, e)
             return None
     
     def read_pointer(self, offset: int) -> Optional[int]:
@@ -887,9 +1020,10 @@ class RyujinxMemoryReader:
             return None
         try:
             data = self.pm.read_bytes(self.base_address + offset, 8)
+            self._record_success()
             return struct.unpack('<Q', data)[0]  # Little-endian 64-bit
         except Exception as e:
-            # Suppress repetitive error logging - normal when memory isn't loaded yet
+            self._record_failure("read_pointer", offset, e)
             return None
     
     def read_bytes(self, offset: int, length: int) -> Optional[bytes]:
@@ -897,9 +1031,11 @@ class RyujinxMemoryReader:
         if not self.base_address or not self.pm:
             return None
         try:
-            return self.pm.read_bytes(self.base_address + offset, length)
+            data = self.pm.read_bytes(self.base_address + offset, length)
+            self._record_success()
+            return data
         except Exception as e:
-            logger.debug(f"Error reading {length} bytes at 0x{offset:X}: {e}")
+            self._record_failure("read_bytes", offset, e)
             return None
     
     def write_float(self, offset: int, value: float) -> bool:
@@ -909,9 +1045,10 @@ class RyujinxMemoryReader:
         try:
             data = struct.pack('<f', value)
             self.pm.write_bytes(self.base_address + offset, data, len(data))
+            self._record_success()
             return True
         except Exception as e:
-            logger.debug(f"Error writing float at 0x{offset:X}: {e}")
+            self._record_failure("write_float", offset, e)
             return False
     
     def write_int(self, offset: int, value: int) -> bool:
@@ -921,9 +1058,10 @@ class RyujinxMemoryReader:
         try:
             data = struct.pack('<I', value)
             self.pm.write_bytes(self.base_address + offset, data, len(data))
+            self._record_success()
             return True
         except Exception as e:
-            logger.debug(f"Error writing int at 0x{offset:X}: {e}")
+            self._record_failure("write_int", offset, e)
             return False
     
     def write_byte(self, offset: int, value: int) -> bool:
@@ -932,9 +1070,10 @@ class RyujinxMemoryReader:
             return False
         try:
             self.pm.write_uchar(self.base_address + offset, value)
+            self._record_success()
             return True
         except Exception as e:
-            logger.debug(f"Error writing byte at 0x{offset:X}: {e}")
+            self._record_failure("write_byte", offset, e)
             return False
     
     def write_short(self, offset: int, value: int) -> bool:
@@ -944,9 +1083,10 @@ class RyujinxMemoryReader:
         try:
             data = struct.pack('<H', value)
             self.pm.write_bytes(self.base_address + offset, data, len(data))
+            self._record_success()
             return True
         except Exception as e:
-            logger.debug(f"Error writing short at 0x{offset:X}: {e}")
+            self._record_failure("write_short", offset, e)
             return False
 
 
@@ -1678,9 +1818,9 @@ class SSHDContext(CommonContext):
                     # so retries don't skip tiers
                     if is_progressive:
                         self.progressive_counts[item_name] = next_count
-                    logger.debug(f"Gave {actual_item_name} with animation!")
+                    logger.debug(f"Gave {actual_item_name} via item buffer (game will handle animation)")
                 else:
-                    logger.warning(f"Failed to give {actual_item_name} via item system")
+                    logger.debug(f"Failed to give {actual_item_name} via item system (player may be busy)")
                 return success
             except Exception as e:
                 logger.warning(f"Item system error for {actual_item_name}: {e}")
@@ -1717,6 +1857,41 @@ class SSHDContext(CommonContext):
                 
                 # Connection established, update game state
                 await self.update_game_state()
+
+                # --- Health check: detect false-positive base addresses ---
+                # If every single memory operation has been failing (e.g. all
+                # reads returning None, all writes returning False) the base
+                # address was likely a false positive.  Invalidate it so the
+                # next iteration rescans.
+                if not self.memory.is_healthy():
+                    logger.error(
+                        f"Memory health check failed — "
+                        f"{self.memory._consecutive_failures} consecutive "
+                        f"failures.  Base address likely invalid; rescanning..."
+                    )
+                    # Reset AP buffer offsets so they get re-scanned after
+                    # the next successful base-address scan.
+                    self._ap_item_info_offset = None
+                    self._ap_check_stats_offset = None
+                    self._ap_item_info_written = False
+                    self.beetle_patch_applied = False
+                    self.memory.invalidate_base()
+
+                    # Immediately attempt a new base-address scan instead of
+                    # waiting for the next cycle (which would spin doing
+                    # nothing since connected=True but base_address=None).
+                    logger.info("Attempting automatic rescan for SSHD base address...")
+                    if not await self.memory.find_base_address():
+                        logger.error(
+                            "Rescan failed — will retry in 10 s.  "
+                            "Is the game still running?"
+                        )
+                        await asyncio.sleep(10)
+                    else:
+                        self.connection_time = time.time()
+                        self._write_ap_item_info_table()
+                    continue
+
                 await asyncio.sleep(0.1)  # Update 10 times per second
                 
             except Exception as e:
@@ -1796,6 +1971,9 @@ class SSHDContext(CommonContext):
                         # Received own item
                         logger.info(f"Received {item_data['name']} ({location_name})")
                     
+                    # Clear retry counter on success
+                    item_data.pop("_retry_count", None)
+                    
                     # Remove from queue and persist delivery count
                     self.item_queue.pop(0)
                     self.delivered_item_count += 1
@@ -1803,6 +1981,24 @@ class SSHDContext(CommonContext):
                     
                     # Update tracker with new item
                     self.update_tracker_state()
+                else:
+                    # Item delivery failed - track retries to avoid infinite loops
+                    MAX_ITEM_RETRIES = 50  # ~50 attempts × 5s timeout = ~4 min max
+                    retry_count = item_data.get("_retry_count", 0) + 1
+                    item_data["_retry_count"] = retry_count
+                    
+                    if retry_count >= MAX_ITEM_RETRIES:
+                        item_name = item_data["name"]
+                        logger.error(
+                            f"[ItemDelivery] Giving up on {item_name} after {retry_count} attempts. "
+                            f"Item will be re-delivered on next reconnect."
+                        )
+                        # Move to back of queue instead of dropping forever,
+                        # so it can be retried after other items succeed
+                        # (which may fix the buffer address via cycling)
+                        self.item_queue.pop(0)
+                        item_data["_retry_count"] = 0  # Reset for next round
+                        self.item_queue.append(item_data)
             
             # Check for death (for death link)
             current_health = self.memory.read_short(OFFSET_CURRENT_HEALTH)
@@ -1845,6 +2041,9 @@ class SSHDContext(CommonContext):
             if self.custom_flag_to_location:
                 # Use custom flag system (preferred for SSHD)
                 await self.check_custom_flags()
+                # Supplement: shop purchases don't set custom scene/dungeon flags,
+                # so also check Beedle's sold-out storyflags from the save file.
+                await self.check_beedle_shop_storyflags()
             elif LOCATION_FLAG_MAP:
                 # Fallback to LocationFlags.py - but only if static memory is accessible
                 # Test if we can read the first static flag address to avoid error spam
@@ -2060,7 +2259,7 @@ class SSHDContext(CommonContext):
                     success = self.memory.write_int(OFFSET_BEETLE_TIMER_INSTRUCTION, BEETLE_TIMER_PATCHED_VALUE)
                     if success:
                         self.beetle_patch_applied = True
-                        logger.info("Beetle time patch applied (ARM64 code patch at +0x279CE4)")
+                        logger.debug("Beetle time patch applied (ARM64 code patch at +0x279CE4)")
                 elif current_instruction == BEETLE_TIMER_PATCHED_VALUE:
                     self.beetle_patch_applied = True
             except Exception as e:
@@ -2216,7 +2415,7 @@ class SSHDContext(CommonContext):
             for addr in sorted(cached, key=lambda a: abs(a - base)):
                 if self._validate_buffer_address(addr, magic_bytes, name):
                     offset = addr - base
-                    logger.info(f"Found {name} at 0x{addr:X} (offset 0x{offset:X}) [prescan cache]")
+                    logger.debug(f"Found {name} at 0x{addr:X} (offset 0x{offset:X}) [prescan cache]")
                     return offset
         
         # --- Derive from adjacent buffer (AP_CHECK_STATS ↔ AP_ITEM_INFO_TABLE) ---
@@ -2228,7 +2427,15 @@ class SSHDContext(CommonContext):
                 return offset
         
         # --- Slow path: fall back to full process scan ---
-        logger.info(f"Prescan cache miss for {name}, doing full pattern scan...")
+        # Use a negative cache to avoid running this expensive scan every cycle
+        # when the prescan didn't find anything (which is the expected case when
+        # the base address is a false positive).
+        now = time.time()
+        last_miss = self.memory._scan_negative_cache.get(name, 0.0)
+        if now - last_miss < self.memory.SCAN_NEGATIVE_CACHE_SECS:
+            return None  # Too soon since last failed scan
+
+        logger.debug(f"Prescan cache miss for {name}, doing full pattern scan...")
         try:
             from pymem import pattern
             found = pattern.pattern_scan_all(self.memory.pm.process_handle, magic_bytes)
@@ -2241,7 +2448,7 @@ class SSHDContext(CommonContext):
                 for addr in addresses:
                     if self._validate_buffer_address(addr, magic_bytes, name):
                         offset = addr - base
-                        logger.info(f"Found {name} at 0x{addr:X} (offset 0x{offset:X}) [full scan]")
+                        logger.debug(f"Found {name} at 0x{addr:X} (offset 0x{offset:X}) [full scan]")
                         return offset
                 # Log rejection for debugging
                 logger.warning(
@@ -2254,6 +2461,8 @@ class SSHDContext(CommonContext):
         except Exception as e:
             logger.warning(f"Pattern scan for {name} failed: {e}")
         
+        # Record this miss so we don't rescan again for SCAN_NEGATIVE_CACHE_SECS
+        self.memory._scan_negative_cache[name] = now
         logger.warning(f"Could not find {name} buffer in memory")
         return None
 
@@ -2356,7 +2565,7 @@ class SSHDContext(CommonContext):
             self.memory.pm.write_bytes(table_addr + 4, count_data, len(count_data))
             
             self._ap_item_info_written = True
-            logger.info(f"Wrote {count} AP item info entries to game memory")
+            logger.debug(f"Wrote {count} AP item info entries to game memory")
             
         except Exception as e:
             logger.warning(f"Failed to write AP item info table: {e}")
@@ -2477,8 +2686,8 @@ class SSHDContext(CommonContext):
                         logger.debug(f"[DEBUG] SaveFile FA offset: 0x{file_a_offset:X}")
                         logger.debug(f"[DEBUG] Sceneflags offset within FA: 0x{OFFSET_FA_SCENEFLAGS:X}")
                         logger.debug(f"[DEBUG] Dungeonflags offset within FA: 0x{OFFSET_FA_DUNGEONFLAGS:X}")
-                        logger.info(f"[Optimization] Batch-reading flag scenes for {len(self.custom_flag_to_location)} locations")
-                        logger.info(f"[FlagInit] Initializing previous_custom_flags to prevent false positives...")
+                        logger.debug(f"[Optimization] Batch-reading flag scenes for {len(self.custom_flag_to_location)} locations")
+                        logger.debug(f"[FlagInit] Initializing previous_custom_flags to prevent false positives...")
                         self._logged_addresses = True
                         # Initialize previous_custom_flags on first poll to prevent treating
                         # already-set flags as new location checks
@@ -2572,8 +2781,168 @@ class SSHDContext(CommonContext):
             initialized_count = len(self.previous_custom_flags)
             # Count how many flags are already set
             already_set = sum(1 for v in self.previous_custom_flags.values() if v == 1)
-            logger.info(f"[FlagInit] Initialized {initialized_count} custom flags - now monitoring for changes")
-            logger.info(f"[FlagInit] {already_set} flags were already set in save file")
+            logger.debug(f"[FlagInit] Initialized {initialized_count} custom flags - now monitoring for changes")
+            logger.debug(f"[FlagInit] {already_set} flags were already set in save file")
+    
+    async def check_beedle_shop_storyflags(self):
+        """
+        Detect Beedle's Airshop purchases by monitoring the vanilla sold_out
+        storyflags from the SHOP_ITEMS table.
+        
+        Each SHOP_ITEMS entry has a sold_out_storyflag (offset +0x52).  The
+        vanilla game sets this flag when the player completes a purchase, which
+        causes the item to appear sold-out in the shop UI.  We read these flag
+        IDs from memory and monitor them in both STATIC_STORYFLAGS (updated
+        immediately by StoryflagMgr) and FA storyflags (committed on save) to
+        detect the 0 -> 1 transition.
+        
+        Storyflags: stored as [u16; 128]. Storyflag N -> word[N//16] bit (N%16).
+        """
+        if not self.memory.connected or not self.memory.base_address:
+            return
+        
+        # ── One-time initialisation ──────────────────────────────────
+        if not hasattr(self, '_prev_beedle_flags'):
+            self._prev_beedle_flags = {}
+            self._beedle_flags_initializing = True
+            self._fa_storyflag_snapshot = None     # 256-byte FA snapshot
+            self._static_storyflag_snapshot = None  # 256-byte STATIC snapshot
+            self._beedle_dynamic_map = {}           # sold_out_sf -> location_name
+            
+            abs_fa = self.memory.base_address + OFFSET_SAVEFILE_A + OFFSET_FA_STORYFLAGS
+            abs_static = self.memory.base_address + OFFSET_STORY_FLAGS_STATIC
+            logger.debug(f"[Beedle] FA Storyflags : 0x{abs_fa:X}")
+            logger.debug(f"[Beedle] STATIC Storyflags: 0x{abs_static:X}")
+            logger.debug(f"[Beedle] (base=0x{self.memory.base_address:X})")
+            
+            # ---- Build sold_out_sf -> location mapping from SHOP_ITEMS ----
+            logger.debug("[Beedle] Reading SHOP_ITEMS sold_out storyflags for Beedle items...")
+            try:
+                for idx in range(20, 30):
+                    location = SHOP_INDEX_TO_LOCATION.get(idx)
+                    if not location:
+                        logger.warning(f"[Beedle] SHOP_ITEMS[{idx}] has no AP location mapping")
+                        continue
+                    
+                    # Read sold_out_storyflag
+                    sf_offset = OFFSET_SHOP_ITEMS + idx * SHOP_ITEM_SIZE + SHOP_ITEM_SOLD_OUT_SF_FIELD
+                    sf_data = self.memory.read_bytes(sf_offset, 2)
+                    sold_out_sf = int.from_bytes(sf_data, 'little') if sf_data and len(sf_data) == 2 else -1
+                    
+                    # Read event_entrypoint for diagnostic
+                    ep_offset = OFFSET_SHOP_ITEMS + idx * SHOP_ITEM_SIZE + SHOP_ITEM_EVENT_EP_FIELD
+                    ep_data = self.memory.read_bytes(ep_offset, 2)
+                    ep_val = int.from_bytes(ep_data, 'little') if ep_data and len(ep_data) == 2 else 0
+                    
+                    if sold_out_sf > 0:
+                        self._beedle_dynamic_map[sold_out_sf] = location
+                        logger.debug(f"[Beedle] SHOP_ITEMS[{idx}] sold_out_sf={sold_out_sf} -> {location}  (ep={ep_val})")
+                    else:
+                        logger.warning(f"[Beedle] SHOP_ITEMS[{idx}] invalid sold_out_sf={sold_out_sf}")
+                
+                logger.debug(f"[Beedle] Dynamic mapping built: {len(self._beedle_dynamic_map)} sold_out storyflags")
+                for sf, loc in sorted(self._beedle_dynamic_map.items()):
+                    logger.debug(f"[Beedle]   sf{sf} -> {loc}")
+                    
+            except Exception as e:
+                logger.warning(f"[Beedle] Failed to build dynamic mapping: {e}")
+                import traceback; traceback.print_exc()
+        
+        # ── Read storyflag arrays (256 bytes = 128 u16 = 2048 flags) ─
+        fa_storyflags_offset = OFFSET_SAVEFILE_A + OFFSET_FA_STORYFLAGS
+        fa_raw = self.memory.read_bytes(fa_storyflags_offset, 256)
+        static_raw = self.memory.read_bytes(OFFSET_STORY_FLAGS_STATIC, 256)
+        
+        # ── Diagnostic: log ANY FA storyflag changes ─────────────────
+        if fa_raw and len(fa_raw) == 256:
+            if self._fa_storyflag_snapshot is not None:
+                for i in range(128):
+                    old_val = int.from_bytes(self._fa_storyflag_snapshot[i*2:i*2+2], 'little')
+                    new_val = int.from_bytes(fa_raw[i*2:i*2+2], 'little')
+                    if old_val != new_val:
+                        diff = old_val ^ new_val
+                        changed_bits = []
+                        for b in range(16):
+                            if diff & (1 << b):
+                                sf_num = i * 16 + b
+                                was = (old_val >> b) & 1
+                                now = (new_val >> b) & 1
+                                changed_bits.append(f"sf{sf_num}:{was}->{now}")
+                        logger.debug(f"[BeedleScan] FA storyflag u16[{i}] changed: "
+                                    f"0x{old_val:04X}->0x{new_val:04X}  ({', '.join(changed_bits)})")
+            self._fa_storyflag_snapshot = fa_raw
+        
+        # ── Diagnostic: log ANY STATIC storyflag changes ─────────────
+        if static_raw and len(static_raw) == 256:
+            if self._static_storyflag_snapshot is not None:
+                for i in range(128):
+                    old_val = int.from_bytes(self._static_storyflag_snapshot[i*2:i*2+2], 'little')
+                    new_val = int.from_bytes(static_raw[i*2:i*2+2], 'little')
+                    if old_val != new_val:
+                        diff = old_val ^ new_val
+                        changed_bits = []
+                        for b in range(16):
+                            if diff & (1 << b):
+                                sf_num = i * 16 + b
+                                was = (old_val >> b) & 1
+                                now = (new_val >> b) & 1
+                                changed_bits.append(f"sf{sf_num}:{was}->{now}")
+                        logger.debug(f"[BeedleScan] STATIC storyflag u16[{i}] changed: "
+                                    f"0x{old_val:04X}->0x{new_val:04X}  ({', '.join(changed_bits)})")
+            self._static_storyflag_snapshot = static_raw
+        
+        # ── Check sold_out storyflags for purchases ──────────────────
+        # Read from BOTH FA and STATIC — whichever shows the flag first wins.
+        for storyflag_num, location_name in self._beedle_dynamic_map.items():
+            if location_name not in LOCATION_TABLE:
+                continue
+            location_code = LOCATION_TABLE[location_name].code
+            if location_code in self.checked_locations:
+                continue
+            
+            u16_index = storyflag_num // 16
+            bit_offset = storyflag_num % 16
+            
+            try:
+                # Try FA first, then STATIC as fallback
+                flag_state = 0
+                source = "?"
+                if fa_raw and len(fa_raw) == 256:
+                    u16_val = int.from_bytes(fa_raw[u16_index*2:u16_index*2+2], 'little')
+                    flag_state = (u16_val >> bit_offset) & 1
+                    source = "FA"
+                
+                # Also check STATIC — it may be updated before FA commit
+                if flag_state == 0 and static_raw and len(static_raw) == 256:
+                    u16_val = int.from_bytes(static_raw[u16_index*2:u16_index*2+2], 'little')
+                    flag_state = (u16_val >> bit_offset) & 1
+                    source = "STATIC"
+                
+                prev_state = self._prev_beedle_flags.get(storyflag_num, 0)
+                
+                if self._beedle_flags_initializing:
+                    self._prev_beedle_flags[storyflag_num] = flag_state
+                    if flag_state == 1:
+                        if location_code not in self.checked_locations:
+                            self.checked_locations.add(location_code)
+                            logger.debug(f"[BeedleInit] Recovering: {location_name} (sold_out_sf{storyflag_num}, {source})")
+                elif flag_state == 1 and prev_state == 0:
+                    self.checked_locations.add(location_code)
+                    logger.debug(f"[Beedle] Location checked: {location_name} (sold_out_sf{storyflag_num}, detected in {source})")
+                    self.update_tracker_state()
+                    self._prev_beedle_flags[storyflag_num] = flag_state
+                else:
+                    self._prev_beedle_flags[storyflag_num] = flag_state
+                    
+            except Exception as e:
+                logger.debug(f"Error reading Beedle sold_out storyflag {storyflag_num}: {e}")
+        
+        # Clear initialization flag after first complete poll
+        if self._beedle_flags_initializing:
+            self._beedle_flags_initializing = False
+            already_bought = sum(1 for v in self._prev_beedle_flags.values() if v == 1)
+            logger.debug(f"[BeedleInit] Initialized {len(self._prev_beedle_flags)} Beedle sold_out storyflags "
+                        f"({already_bought} already purchased)")
     
     async def check_all_locations(self):
         """Check all locations using LocationFlags.py data (Wii addresses - may not work on Switch)."""
@@ -2961,7 +3330,7 @@ async def main(args=None):
     
     print("="*60)
     print("Skyward Sword HD Archipelago Client")
-    print("  Build: dev-0.6.11")
+    print("  Build: [BETA] 0.7.0")
     print("="*60)
     print(f"Starting client...")
     print(f"Arguments: {args}")

@@ -24,7 +24,6 @@ CONTROL_REPLACEMENTS = {
     "<s<": "\x0e\x00\x03\x02\x0a",  # silver
     "<ye<": "\x0e\x00\x03\x02\x0b",  # gold rupee gold
     "<blk<": "\x0e\x00\x03\x02\x0c",  # rupoor
-    ">>": "\x0e\x00\x03\x02\uffff",  # end color
     # start of option token, '-' means cancel (B) option
     "[1]": "\x0e\x01\x00\x02\uffff",
     "[2-]": "\x0e\x01\x01\x02\x00",
@@ -131,6 +130,9 @@ CONTROL_REPLACEMENTS = {
     "<icon 57>": "\x0e\x02\x04\x02\u39cd",  # L stick Right-Left blur icon
     "<icon 58>": "\x0e\x02\x04\x02\u3acd",  # ? icon
     "<icon 59>": "\x0e\x02\x04\x02\u3bcd",  # ? icon
+    # end color must come after all <...> tags so that >>> sequences
+    # (e.g. <b<<string arg1>>>) resolve inner tags before the closing >>
+    ">>": "\x0e\x00\x03\x02\uffff",  # end color
 }
 
 

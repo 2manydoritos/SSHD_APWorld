@@ -14,6 +14,7 @@ import json
 import tempfile
 import shutil
 import atexit
+import threading
 from base64 import b64encode
 from copy import deepcopy
 from dataclasses import fields
@@ -236,7 +237,12 @@ class SSHDWorld(World):
     Travel between the Surface and Sky, explore dungeons, and collect items across
     a vast interconnected world.
     """
-    
+
+    # Lock to serialize sshd-rando patch generation across players.
+    # generate_output runs in parallel threads, but sshd-rando uses module-level
+    # global state (text_table, etc.) that is not thread-safe.
+    _sshd_patch_lock: ClassVar[threading.Lock] = threading.Lock()
+
     game: ClassVar[str] = "Skyward Sword HD"
     web = SSHDWeb()
     
@@ -622,10 +628,11 @@ class SSHDWorld(World):
     
     def _get_excluded_item_types(self) -> set:
         """
-        Determine which location types' ITEMS should be excluded from the
-        AP item pool based on shuffle settings. When a shuffle is off, items
-        from those locations are replaced with filler, but the locations
-        themselves still exist in the AP world (any item can be placed there).
+        Determine which location types should be excluded based on shuffle
+        settings. When a shuffle is off, both the items from those locations
+        AND the locations themselves are excluded from the AP world. This
+        prevents Archipelago's fill algorithm from placing random items at
+        locations that should remain vanilla in-game.
         """
         # Use resolved sshd-rando settings if available, else fall back to AP options
         s = getattr(self, '_sshd_resolved_settings', {})
@@ -697,19 +704,39 @@ class SSHDWorld(World):
             regions_dict[region_name] = region
         
         # Add locations to their respective regions
-        # Goddess Cubes are always excluded (internal logic, no in-game model).
-        # Goddess Chests are excluded unless goddess_chest_shuffle is on.
-        # All other locations exist regardless of shuffle settings.
+        # When a shuffle setting is off, the corresponding locations stay
+        # vanilla in-game and must not be AP locations. If they existed as
+        # AP locations without their vanilla items in the pool, Archipelago's
+        # fill algorithm would place random items there.
+        # This mirrors sshd-rando-backend's get_disabled_shuffle_locations().
+        excluded_types = self._get_excluded_item_types()
+        
+        # Dusk Relic per-location exclusion based on trial_treasure_shuffle
         s = getattr(self, '_sshd_resolved_settings', {})
-        goddess_chests_on = s.get("goddess_chest_shuffle", "off") in ("on", "randomized") if s else bool(getattr(self.options, 'goddess_chest_shuffle', None) and self.options.goddess_chest_shuffle.value)
+        if s:
+            trial_treasure_val = s.get("trial_treasure_shuffle", "0")
+        else:
+            trial_treasure_val = str(self.options.trial_treasure_shuffle.value)
+        trial_treasure_is_random = trial_treasure_val == "random"
+        try:
+            trial_treasure_num = int(trial_treasure_val) if not trial_treasure_is_random else 999
+        except (ValueError, TypeError):
+            trial_treasure_num = 0
+        
         for name, data in LOCATION_TABLE.items():
             if data.code is not None:
-                # Always skip Goddess Cubes (dummy internal logic items)
-                if any(t == "Goddess Cube" for t in data.types):
+                # Skip locations whose types are in the excluded set
+                if any(t in excluded_types for t in data.types):
                     continue
-                # Skip Goddess Chests unless goddess_chest_shuffle is on
-                if not goddess_chests_on and any(t == "Goddess Chests" for t in data.types):
-                    continue
+
+                # Dusk Relic per-location check: exclude relics above the setting number
+                if "Dusk Relic" in data.types and not trial_treasure_is_random:
+                    try:
+                        relic_num = int(name.split(" ")[-1])
+                    except (ValueError, IndexError):
+                        relic_num = 0
+                    if relic_num > trial_treasure_num:
+                        continue
                 region = regions_dict.get(data.region)
                 if region:
                     location = Location(
@@ -786,6 +813,8 @@ class SSHDWorld(World):
                 # When a shuffle is off, those locations stay vanilla in-game
                 # and must not contribute items to Archipelago's randomized pool.
                 excluded_loc_types: set[str] = set()
+                trial_treasure_num_early = 0
+                trial_treasure_is_random_early = False
                 if hasattr(world, 'setting_map') and world.setting_map:
                     sm = world.setting_map.settings
                     _toggle_map = {
@@ -802,6 +831,8 @@ class SSHDWorld(World):
                             excluded_loc_types.add(loc_type)
                     if "npc_closet_shuffle" in sm and sm["npc_closet_shuffle"].value == "vanilla":
                         excluded_loc_types.add("Closets")
+                    if "beedle_shop_shuffle" in sm and sm["beedle_shop_shuffle"].value == "vanilla":
+                        excluded_loc_types.add("Beedle's Airshop")
                     rupee_setting = sm.get("rupee_shuffle", None)
                     rupee_str = rupee_setting.value if rupee_setting else "vanilla"
                     if rupee_str == "vanilla":
@@ -810,6 +841,14 @@ class SSHDWorld(World):
                         excluded_loc_types.update(["Intermediate Rupees", "Advanced Rupees"])
                     elif rupee_str == "intermediate":
                         excluded_loc_types.add("Advanced Rupees")
+                    # Dusk Relic: trial_treasure_shuffle
+                    tt_setting = sm.get("trial_treasure_shuffle", None)
+                    tt_str = tt_setting.value if tt_setting else "0"
+                    trial_treasure_is_random_early = tt_str == "random"
+                    try:
+                        trial_treasure_num_early = int(tt_str) if not trial_treasure_is_random_early else 999
+                    except (ValueError, TypeError):
+                        trial_treasure_num_early = 0
 
                 # Goddess Cubes are dummy logic items (oarc: null) — always exclude
                 excluded_loc_types.add("Goddess Cube")
@@ -826,6 +865,15 @@ class SSHDWorld(World):
                         # Skip locations for non-shuffled types
                         if excluded_loc_types and hasattr(location, 'types'):
                             if any(t in excluded_loc_types for t in location.types):
+                                locations_excluded += 1
+                                continue
+                        # Dusk Relic per-location check
+                        if hasattr(location, 'types') and "Dusk Relic" in location.types and not trial_treasure_is_random_early:
+                            try:
+                                relic_num = int(loc_name.split(" ")[-1])
+                            except (ValueError, IndexError):
+                                relic_num = 0
+                            if relic_num > trial_treasure_num_early:
                                 locations_excluded += 1
                                 continue
                         if hasattr(location, 'current_item') and location.current_item:
@@ -1506,8 +1554,15 @@ class SSHDWorld(World):
                 # Import from sshd-rando via sys.path
                 import sys
                 from patches.allpatchhandler import AllPatchHandler
-                patch_handler = AllPatchHandler(world)
-                patch_handler.do_all_patches()
+                from util.text import load_text_data
+                # Serialize patch generation: sshd-rando uses module-level global
+                # state (text_table) that is not thread-safe. Archipelago runs
+                # generate_output in parallel threads, so we must hold a lock
+                # for the entire patch generation to prevent data corruption.
+                with SSHDWorld._sshd_patch_lock:
+                    load_text_data()
+                    patch_handler = AllPatchHandler(world)
+                    patch_handler.do_all_patches()
                 print("[__init__.py] ✓ Patches applied successfully")
                 
                 # Extract the ACTUAL custom flag assignments from sshd-rando's world object
@@ -2005,7 +2060,9 @@ class SSHDWorld(World):
         ALL locations need custom flags because any location could contain
         an Archipelago item for another player's world.
         
-        Custom flags are assigned sequentially (in reverse order) to all locations.
+        Custom flags are assigned from the HIGH end of the pool (1015, 1014, ...)
+        to avoid collisions with the sshd-rando patcher, which assigns non-AP
+        locations from the LOW end (0, 1, 2, ...).
         
         Returns:
             Dict[int, int]: custom_flag_id -> location_code (Archipelago)
@@ -2014,8 +2071,10 @@ class SSHDWorld(World):
         
         # Generate the same custom flag list as sshd-rando
         # Excludes flags where the lower 7 bits are all 1s (0x7F)
+        # IMPORTANT: Do NOT reverse - pop() from the end gives high IDs (1015, 1014, ...)
+        # The sshd-rando patcher assigns from the low end (0, 1, 2, ...) for non-AP locations,
+        # so AP must use the high end to avoid flag ID collisions.
         custom_flags = [i for i in range(1024) if (i & 0x7F) != 0x7F]
-        custom_flags.reverse()  # Assign from highest to lowest
         
         custom_flag_to_location = {}
         

@@ -277,6 +277,16 @@ pub extern "C" fn handle_shop_traps() {
         ACTORBASE_PARAM2 = 0xFFFFFF0F | (((*shop_item).trapbits << 4) as u32);
         ITEM_GET_BOTTLE_POUCH_SLOT = 0xFFFFFFFF;
         NUMBER_OF_ITEMS = 0;
+
+        // Set the sold-out storyflag immediately during purchase.
+        // The normal state-machine transition (jumptable 71) never fires for
+        // Beedle items because the 105-Terry event system handles the entire
+        // purchase flow and bypasses the shop subclass sold-out state.
+        // Setting it here ensures the AP client can detect the purchase.
+        let sf = (*shop_item).sold_out_storyflag;
+        if sf != 0 && sf != 0xFFFF {
+            flag::set_storyflag(sf);
+        }
     }
 }
 

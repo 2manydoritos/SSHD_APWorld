@@ -1818,16 +1818,48 @@ pub static mut ARCHIPELAGO_ITEM_BUFFER: [ArchipelagoItemSlot; ARCHIPELAGO_BUFFER
     },
 ];
 
+// Player actions during which we must NOT deliver an Archipelago item.
+// Values match BUSY_PLAYER_ACTIONS in ItemSystemIntegration.py.
+const BUSY_ACTIONS: [player::PLAYER_ACTIONS; 16] = [
+    player::PLAYER_ACTIONS::DIE,                         // 0x4A
+    player::PLAYER_ACTIONS::REVIVE,                      // 0x4B
+    player::PLAYER_ACTIONS::INTERACT,                    // 0x58
+    player::PLAYER_ACTIONS::USING_DOOR,                  // 0x6E
+    player::PLAYER_ACTIONS::USE_DDOOR,                   // 0x6F
+    player::PLAYER_ACTIONS::ZEV_EVENT_MAYBE,             // 0x77
+    player::PLAYER_ACTIONS::ITEM_GET,                    // 0x78
+    player::PLAYER_ACTIONS::RELATED_TO_NEW_SWORD_IN_CS_, // 0x7B
+    player::PLAYER_ACTIONS::OPEN_CHEST,                  // 0x7D
+    player::PLAYER_ACTIONS::SWORD_IN_DIAL,               // 0x86
+    player::PLAYER_ACTIONS::ON_BIRD,                     // 0x8A
+    player::PLAYER_ACTIONS::RECEIVE_GODDESS_FRUIT,       // 0x91
+    player::PLAYER_ACTIONS::SLEEPING,                    // 0x93
+    player::PLAYER_ACTIONS::PLACE_TABLET,                // 0xAF
+    player::PLAYER_ACTIONS::ENTER_GODDESS_WALL,          // 0xB4
+    player::PLAYER_ACTIONS::EXIT_GODDESS_WALL,           // 0xB6
+];
+
+/// Returns true if the player is currently in a "busy" action and must not
+/// receive an Archipelago item right now.
+#[inline]
+fn player_is_busy() -> bool {
+    unsafe {
+        if PLAYER_PTR.is_null() {
+            return true; // No player yet — treat as busy
+        }
+        let action = core::ptr::read_volatile(core::ptr::addr_of!((*PLAYER_PTR).current_action));
+        for &busy in &BUSY_ACTIONS {
+            if action == busy {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn archipelago_check_item_buffer() {
     unsafe {
-        // TEMPORARY: Skip ROOM_MGR check for Archipelago testing
-        // The ROOM_MGR pointer uses absolute addresses that don't relocate properly
-        // with ASLR TODO: Fix symbol relocation or use dynamic lookup
-        // if ROOM_MGR.is_null() {
-        //     return;
-        // }
-
         // Check each slot in the buffer
         // Skip slot 0 which contains the magic signature
         for (i, slot) in ARCHIPELAGO_ITEM_BUFFER.iter_mut().enumerate() {
@@ -1841,6 +1873,12 @@ pub extern "C" fn archipelago_check_item_buffer() {
                 continue;
             }
 
+            // Item pending — check if the player is in a state where we can
+            // safely deliver it.  If not, leave the slot and retry next frame.
+            if player_is_busy() {
+                return;
+            }
+
             // Item found - give it to the player
             let _show_animation = (slot.flags & 0x01) != 0;
             let _play_jingle = (slot.flags & 0x02) != 0;
@@ -1849,7 +1887,16 @@ pub extern "C" fn archipelago_check_item_buffer() {
             let sceneflag = 0xFF;
 
             // Call the existing give_item function
-            let _item_actor = give_item_with_sceneflag(slot.item_id, sceneflag);
+            let item_actor = give_item_with_sceneflag(slot.item_id, sceneflag);
+
+            // Force textbox for AP-delivered items.  check_and_modify_item_actor
+            // suppresses textboxes for common items (rupees, hearts, etc.) but for
+            // AP items the player needs to see what the multiworld sent them.
+            // We override param1 AFTER init so check_and_modify_item_actor (which
+            // runs during boot for ALL items) stays completely untouched.
+            if !item_actor.is_null() {
+                (*item_actor).base.basebase.members.param1 &= !0x200u32;
+            }
 
             // Clear the slot after processing
             slot.item_id = 0;

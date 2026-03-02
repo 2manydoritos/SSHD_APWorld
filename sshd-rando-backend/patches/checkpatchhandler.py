@@ -47,6 +47,16 @@ def determine_check_patches(
 
     location_table = world.location_table
 
+    # Remove flags already injected by Archipelago to prevent collisions.
+    # AP assigns from the high end; the patcher assigns from the low end.
+    # This depletion is defense-in-depth in case the pools ever overlap.
+    injected_flags = {
+        loc.custom_flag for loc in location_table.values()
+        if hasattr(loc, 'custom_flag') and loc.custom_flag != 0x3FF
+    }
+    if injected_flags:
+        custom_flags = [f for f in custom_flags if f not in injected_flags]
+
     # A set is okay here because it doesn't touch any randomization
     playthrough_items = set()
 

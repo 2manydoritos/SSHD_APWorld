@@ -241,6 +241,78 @@ class EventPatchHandler:
                                     
                                     print(f"[EventPatch] Injected set_global_flag(cmd80) for event {eventid}: scene={actual_scene_index}, flag={flag_index}, flag_space={flag_space_trigger} (flow {new_flow_index} -> {original_next_index})")
 
+                        # ============================================================
+                        # Beedle purchase storyflag injection
+                        # Inject set_storyflag commands into 105-Terry.msbf
+                        # purchase flows via FEN1 redirect: each FEN1 entry
+                        # now points to our set_storyflag node, which chains
+                        # to the original flow start.
+                        # Must run AFTER event_patches (so rando-added entries
+                        # 105_39/105_40 exist) and AFTER check_patches.
+                        # ============================================================
+                        if msbf_file_name == "105-Terry.msbf":
+                            from constants.shopconstants import BEEDLE_PURCHASE_STORYFLAGS
+
+                            flows = parsed_msbf["FLW3"]["flow"]
+
+                            # Build FEN1 name -> entry object mapping (keep reference to modify value)
+                            fen1_entries = {}
+                            if "FEN1" in parsed_msbf:
+                                for group in parsed_msbf["FEN1"]:
+                                    for entry in group:
+                                        fen1_entries[entry["name"]] = entry
+
+                            injected_count = 0
+                            for fen1_name, storyflag in BEEDLE_PURCHASE_STORYFLAGS.items():
+                                if fen1_name not in fen1_entries:
+                                    print(f"[BeedleSF] Skipping {fen1_name} (not in FEN1)")
+                                    continue
+
+                                fen1_entry = fen1_entries[fen1_name]
+                                original_start_idx = fen1_entry["value"]
+
+                                # Create set_storyflag node that chains to the original start
+                                setflag_flow = {
+                                    "type": "type3",
+                                    "subType": 0,
+                                    "param1": 0,
+                                    "param2": storyflag,
+                                    "param3": 0,
+                                    "param4": 0,
+                                    "param5": 0,
+                                    "next": original_start_idx,
+                                }
+
+                                new_idx = len(flows)
+                                flows.append(setflag_flow)
+
+                                # Redirect FEN1 entry to our new node
+                                fen1_entry["value"] = new_idx
+                                injected_count += 1
+
+                                print(f"[BeedleSF] FEN1 redirect: {fen1_name} -> flow[{new_idx}](set_storyflag {storyflag}) -> flow[{original_start_idx}]")
+
+                            # Diagnostic: dump flow chain for 105_31 and 105_32
+                            for diag_name in ("105_31", "105_32"):
+                                if diag_name in fen1_entries:
+                                    start = fen1_entries[diag_name]["value"]
+                                    print(f"[BeedleSF-Diag] Flow chain for {diag_name} starting at flow[{start}]:")
+                                    idx = start
+                                    visited_diag = set()
+                                    step = 0
+                                    while idx >= 0 and idx < len(flows) and idx not in visited_diag and step < 15:
+                                        visited_diag.add(idx)
+                                        node = flows[idx]
+                                        print(f"[BeedleSF-Diag]   [{step}] flow[{idx}]: type={node['type']} sub={node['subType']} p1={node['param1']} p2={node['param2']} p3={node['param3']} p4={node['param4']} p5={node['param5']} next={node.get('next', -1)}")
+                                        if node["type"] in ("type3", "type1", "start"):
+                                            idx = node.get("next", -1)
+                                        else:
+                                            print(f"[BeedleSF-Diag]   (switch/branch at flow[{idx}], stopping linear traversal)")
+                                            break
+                                        step += 1
+
+                            print(f"[BeedleSF] Injected {injected_count}/{len(BEEDLE_PURCHASE_STORYFLAGS)} purchase storyflags into 105-Terry.msbf (FEN1 redirect)")
+
                         if msbf_file_name == "003-ItemGet.msbf":
                             handle_progressive_items(parsed_msbf)
 

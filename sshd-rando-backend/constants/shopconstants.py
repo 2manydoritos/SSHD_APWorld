@@ -81,6 +81,8 @@ WALLET_CAPACITY_BOUNDARIES = [
 
 
 NEXT_SHOP_INDEXES = {
+    20: 21,  # pouch 300R -> pouch 600R
+    21: 22,  # pouch 600R -> pouch 1200R
     24: 28,  # extra wallet -> unused1
     28: 29,  # unused1 -> unused2
 }
@@ -101,6 +103,12 @@ EVENT_ENTRYPOINTS = {
 }
 
 SOLD_OUT_STORYFLAGS = {
+    # Pouch items (vanilla pouch subclass) - storyflags set by handle_shop_traps()
+    # for AP client detection (the pouch subclass itself uses ITEMFLAG 490 counter)
+    20: 942,  # 300R pouch
+    21: 943,  # 600R pouch
+    22: 944,  # 1200R pouch
+    # Non-pouch items (extra wallet subclass)
     26: 814,  # 800R
     23: 813,  # 1600R
     24: 937,  # 100R1
@@ -108,6 +116,43 @@ SOLD_OUT_STORYFLAGS = {
     29: 939,  # 100R3
     25: 940,  # 50R
     27: 941,  # 1000R
+}
+
+# Storyflags injected into 105-Terry.msbf purchase flows for AP client detection.
+# The vanilla storyflag-setting code was replaced by rando ASM, and the replacement
+# (handle_shop_traps) never fires for Beedle because the MSBF event system handles
+# the entire purchase flow through dAcShopSample base class, bypassing subclass vtable.
+# Fix: inject set_storyflag commands directly into each MSBF purchase flow at build time.
+# The AP client reads SHOP_ITEMS[N].event_entrypoint from memory, converts to a FEN1
+# name, and looks up the corresponding storyflag to detect purchases dynamically.
+BEEDLE_PURCHASE_STORYFLAGS = {
+    "105_05": 1950,   # Pouch purchase flow 1
+    "105_08": 1951,   # Pouch purchase flow 2
+    "105_09": 1952,   # Pouch purchase flow 3
+    "105_31": 1953,   # Non-pouch purchase flow 1
+    "105_32": 1954,   # Non-pouch purchase flow 2
+    "105_33": 1955,   # Non-pouch purchase flow 3
+    "105_34": 1956,   # Non-pouch purchase flow 4
+    "105_35": 1957,   # Non-pouch purchase flow 5
+    "105_36": 1958,   # Non-pouch purchase flow 6
+    "105_37": 1959,   # Non-pouch purchase flow 7
+    "105_38": 1960,   # Non-pouch purchase flow 8
+    "105_39": 1961,   # Rando-added: Second 100R Item
+    "105_40": 1962,   # Rando-added: Third 100R Item
+}
+
+# Shop index to AP location name (for client-side mapping)
+SHOP_INDEX_TO_LOCATION = {
+    20: "Beedle's Airshop - 300 Rupee Item",
+    21: "Beedle's Airshop - 600 Rupee Item",
+    22: "Beedle's Airshop - 1200 Rupee Item",
+    23: "Beedle's Airshop - 1600 Rupee Item",
+    24: "Beedle's Airshop - First 100 Rupee Item",
+    25: "Beedle's Airshop - 50 Rupee Item",
+    26: "Beedle's Airshop - 800 Rupee Item",
+    27: "Beedle's Airshop - 1000 Rupee Item",
+    28: "Beedle's Airshop - Second 100 Rupee Item",
+    29: "Beedle's Airshop - Third 100 Rupee Item",
 }
 
 # Buy Decide Scale

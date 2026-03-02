@@ -95,7 +95,7 @@ You'll need a legally obtained copy of Skyward Sword HD for Nintendo Switch alon
    - Unzip the generated `.zip` file
    - Copy the `.apsshd` file to another spot
    - Delete it from the unziped folder and rezip
-   - Now extract `.apsshd` and copy `romfs` and `exefs` to your Ryujinx mod directory (located at `C:\Users\Your_Username\AppData\Roaming\Ryujinx\sdcard\atmosphere\contents\01002da013484000\Archipelago` on Windows - you will need to create the `Archipelago` folder)
+   - Now either double click the `.apsshd` file and open it with the Archipelago Launcher or extract the `.apsshd` file and copy `romfs` and `exefs` to your Ryujinx mod directory (located at `C:\Users\Your_Username\AppData\Roaming\Ryujinx\sdcard\atmosphere\contents\01002da013484000\Archipelago` on Windows - you will need to create the `Archipelago` folder)
    - You can now delete the `.apsshd` file and upload the rezipped `.zip` file to [archipelago.gg](https://archipelago.gg)
 
 ### 4. Open Ryujinx
@@ -108,7 +108,7 @@ Get into the game far enough to where you can move Link
 ### 4. Launch the Client
 Double-click `ArchipelagoSSHDClient.exe` (or `launch_sshd.bat`)
 
-If you don't have the exe, you can fall back to `python launch_sshd_wrapper.py`
+If you don't have the exe, launch_sshd.bat will fall back to launching with `python launch_sshd_wrapper.py`
 
 ### 5. Play!
 > **Note**: WAIT UNTIL YOU SEE `Found SSHD base address` IN THE CLIENT BEFORE PICKING ANYTHING UP
@@ -138,7 +138,7 @@ This project is licensed under the AGPL License - see the [LICENSE](LICENSE) for
 - **SSHD Randomizer Team**: For the original SSHD randomizer logic and the very helpful cheat table
 - **Contributors**: Everyone who has helped improve this project
 
-## Beta Testers
+## Dev Testers
 
 - [PokeTrainer](https://github.com/Poke14)
 
@@ -147,6 +147,11 @@ This project is licensed under the AGPL License - see the [LICENSE](LICENSE) for
 - **Discord**: Join the [Lon Lon Labs Discord Server](https://discord.gg/VeccXh4ydN)
 - **Issues**: Report bugs on [GitHub Issues](https://github.com/LonLon-Labs/SSHD_APWorld/issues)
 - **Official Website**: [archipelago.gg](https://archipelago.gg)
+
+## New, Features, Updates, and other Stuff
+
+- **[Check the Trello board](https://trello.com/b/royinojX/skyward-sword-hd-archipelago)**
+- **[Lon Lon Labs Discord Server](https://discord.gg/VeccXh4ydN)**
 
 ## Disclaimer
 

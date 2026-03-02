@@ -339,7 +339,7 @@ pub extern "C" fn custom_event_commands(
         80 => set_global_sceneflag_for_ap(event_flow_element),
         // Set string args for Archipelago Item (216) textbox.
         // (Same #[inline(never)] reasoning as above.)
-        81 => set_ap_item_string_args(),
+        81 => set_ap_item_string_args(actor_event_flow_mgr),
         _ => (),
     }
 
@@ -406,11 +406,15 @@ fn set_global_sceneflag_for_ap(event_flow_element: &EventFlowElement) {
 /// item name + player name in the AP_ITEM_INFO_TABLE (written by the Python
 /// client on connect).
 ///
-/// If the lookup fails (table not yet visible to the JIT), **diagnostic text
-/// is shown in the textbox** (e.g. "f=123 c=0" / "MISS") so the user can
-/// see exactly what went wrong, AND `PENDING_AP_LOOKUP` is set so
-/// `apply_pending_ap_string_args` retries every frame until the lookup
-/// succeeds.
+/// If the lookup fails (flag not yet set by setup_traps, or table not yet
+/// visible to the JIT), a user-friendly fallback ("AP Item" / "another
+/// player") is written to the textbox AND:
+///   - `PENDING_AP_LOOKUP` is set so `apply_pending_ap_string_args` retries
+///     every frame until the lookup succeeds.
+///   - A small delay is added to the event flow so the textbox doesn't open
+///     until setup_traps has had a chance to write the flag_id on a subsequent
+///     frame, giving the retry mechanism time to replace the fallback text
+///     with the real item/player names.
 ///
 /// # Why this is a separate function
 /// `custom_event_commands` ends with an inline asm block that sets `w21`
@@ -423,7 +427,7 @@ fn set_global_sceneflag_for_ap(event_flow_element: &EventFlowElement) {
 /// enough that the compiler only needs x19/x20 (for the two function
 /// parameters), keeping x21 untouched.
 #[inline(never)]
-fn set_ap_item_string_args() {
+fn set_ap_item_string_args(actor_event_flow_mgr: *mut ActorEventFlowMgr) {
     unsafe {
         // Read LAST_AP_ITEM_FLAG_ID.  For freestanding/chest items this is
         // set by setup_traps() at the beginning of stateWait*GetDemoUpdate
@@ -443,23 +447,30 @@ fn set_ap_item_string_args() {
                 core::ptr::addr_of!((*entry_ptr).player_name) as *const c_void,
             )
         } else {
-            // ── Failure: build diagnostic text shown in the textbox ─────
-            let count_val =
-                core::ptr::read_volatile(core::ptr::addr_of!(item::AP_ITEM_INFO_TABLE.count));
-
+            // ── Failure: show user-friendly fallback text ────────────────
             let mut p = 0usize;
-            p += write_ascii(&mut DBG_ITEM_TEXT[p..], b"f=");
-            p += fmt_u16_dec(&mut DBG_ITEM_TEXT[p..], flag_id);
-            p += write_ascii(&mut DBG_ITEM_TEXT[p..], b" c=");
-            p += fmt_u16_dec(&mut DBG_ITEM_TEXT[p..], count_val);
+            p += write_ascii(&mut DBG_ITEM_TEXT[p..], b"Archipelago Item");
             if p < 32 {
                 DBG_ITEM_TEXT[p] = 0;
             }
 
             let mut q = 0usize;
-            q += write_ascii(&mut DBG_PLAYER_TEXT[q..], b"MISS");
+            q += write_ascii(&mut DBG_PLAYER_TEXT[q..], b"another player");
             if q < 16 {
                 DBG_PLAYER_TEXT[q] = 0;
+            }
+
+            // ── Delay the event flow ────────────────────────────────────
+            // On the very first item-216 pickup, setup_traps may not have
+            // written LAST_AP_ITEM_FLAG_ID yet (the game can take a
+            // different code path on the first frame of the get-demo
+            // state).  By delaying the next flow node (the textbox), we
+            // give setup_traps a chance to run on subsequent frames.
+            // The main-loop retry (apply_pending_ap_string_args) will
+            // patch the TextMgr with the correct names before the delay
+            // expires and the textbox opens.
+            if !actor_event_flow_mgr.is_null() {
+                (*actor_event_flow_mgr).next_flow_delay_timer = 10;
             }
 
             (
