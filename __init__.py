@@ -111,11 +111,16 @@ if hasattr(sys.modules[__name__], '__loader__') and hasattr(sys.modules[__name__
                     with open(target_path, 'wb') as target:
                         target.write(source.read())
     
-    # Add bundled deps to path FIRST so they take priority
-    if temp_deps_path.exists():
-        sys.path.insert(0, str(temp_deps_path))
-    # Then add sshd-rando-backend
+    # Add sshd-rando-backend at highest priority (it must shadow nothing
+    # except its own internal modules).
     sys.path.insert(0, str(temp_backend_path))
+    # Add bundled deps at the END of sys.path so they only serve as a
+    # fallback.  Archipelago already ships lz4 / nlzss11 in its own lib
+    # directory; placing our bundled (potentially ABI-incompatible) .pyd
+    # files first would shadow the working copies and cause import errors
+    # on machines with a different CPython micro-build.
+    if temp_deps_path.exists():
+        sys.path.append(str(temp_deps_path))
     SSHD_RANDO_AVAILABLE = True
     
     # Register cleanup function to delete temp directory on exit
@@ -130,6 +135,35 @@ elif SSHD_RANDO_PATH.exists():
     SSHD_RANDO_AVAILABLE = True
 else:
     SSHD_RANDO_AVAILABLE = False
+
+# ---------------------------------------------------------------------------
+# Ensure Archipelago's own lib directory is on sys.path.
+# Archipelago ships lz4, nlzss11, bsdiff4, pyyaml etc. in <install>/lib but
+# that directory is not always visible when an .apworld is loaded.
+# ---------------------------------------------------------------------------
+def _ensure_archipelago_lib_on_path():
+    """Detect the Archipelago installation lib dir and add it to sys.path."""
+    candidates = []
+    # Derive from the apworld location  (…/custom_worlds/sshd.apworld)
+    _ap_dir = Path(__file__).resolve().parents[1]  # one level above the apworld
+    if _ap_dir.name == "custom_worlds":
+        candidates.append(_ap_dir.parent / "lib")
+    # Common default install locations
+    if sys.platform == "win32":
+        candidates.append(Path(os.environ.get("PROGRAMDATA", "C:\\ProgramData")) / "Archipelago" / "lib")
+    else:
+        candidates.append(Path.home() / ".local" / "share" / "Archipelago" / "lib")
+    # Also check relative to the running executable
+    candidates.append(Path(sys.executable).resolve().parent / "lib")
+    for lib_dir in candidates:
+        try:
+            if lib_dir.is_dir() and str(lib_dir) not in sys.path:
+                sys.path.append(str(lib_dir))
+                break  # only add the first match
+        except Exception:
+            pass
+
+_ensure_archipelago_lib_on_path()
 
 # Version information
 AP_VERSION = [0, 6, 5]
