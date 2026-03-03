@@ -574,6 +574,28 @@ def generate_sshd_rando_mod(settings_dict: Dict[str, Any], output_dir: Path, see
     except Exception as e:
         print(f"[SSHDRWrapper] DEBUG: Could not read config seed: {e}")
     
+    # ---------------------------------------------------------------
+    # Ensure the sshd-rando preferences file has the correct absolute
+    # output_dir.  generate() -> load_config_from_file() -> load_preferences()
+    # reads output_dir from a SEPARATE preferences.yaml.  If that file
+    # is missing, stale, or relative, generate() will error out.
+    # ---------------------------------------------------------------
+    try:
+        import filepathconstants as _fpc
+        import yaml as _yaml
+        _prefs_path = Path(_fpc.PREFERENCES_PATH)
+        _prefs_path.parent.mkdir(parents=True, exist_ok=True)
+        _prefs_data = {}
+        if _prefs_path.is_file():
+            with open(_prefs_path, 'r', encoding='utf-8') as _f:
+                _prefs_data = _yaml.safe_load(_f) or {}
+        _prefs_data['output_dir'] = output_dir.as_posix()
+        with open(_prefs_path, 'w', encoding='utf-8') as _f:
+            _yaml.safe_dump(_prefs_data, _f, sort_keys=False)
+        print(f"[SSHDRWrapper] Wrote preferences output_dir: {output_dir.as_posix()}")
+    except Exception as _e:
+        print(f"[SSHDRWrapper] WARNING: Could not write preferences.yaml: {_e}")
+    
     # Generate world (location placement logic)
     # Pass config_file path - generate() will read and use it
     worlds = generate(config_file)
