@@ -86,14 +86,12 @@ def _initialize_sshd_rando():
     
     # Check if sshd-rando was found
     if SSHD_RANDO_PATH is None or not SSHD_RANDO_PATH.exists():
-        # Provide detailed debugging information
         current_file = Path(__file__).resolve()
         debug_info = [
             f"Current file: {current_file}",
             f"Parent directory: {current_file.parent}",
             f"sys.path entries with 'sshd': {[p for p in sys.path if 'sshd' in p.lower()]}",
         ]
-        
         raise ImportError(
             f"sshd-rando not found. Searched in:\n" +
             "\n".join(f"  - {path} (exists: {path.exists()})" for path in POTENTIAL_SSHD_RANDO_PATHS) +
@@ -102,10 +100,51 @@ def _initialize_sshd_rando():
             "\n\nPlease ensure sshd-rando-backend is installed in one of the searched locations."
         )
     
-    # Add sshd-rando to sys.path so we can import it
-    if str(SSHD_RANDO_PATH) not in sys.path:
-        sys.path.insert(0, str(SSHD_RANDO_PATH))
+    # ------------------------------------------------------------------
+    # Ensure the backend is at the FRONT of sys.path and flush the
+    # import-finder caches.  Without invalidate_caches(), Python may
+    # still resolve packages from an earlier snapshot of sys.path and
+    # fail to find 'randomizer' even though it now exists on disk.
+    # ------------------------------------------------------------------
+    backend_str = str(SSHD_RANDO_PATH)
+    if backend_str in sys.path:
+        sys.path.remove(backend_str)
+    sys.path.insert(0, backend_str)
     
+    # Also ensure _bundled_deps is near the top (right after backend)
+    for p in list(sys.path):
+        if p.endswith("_bundled_deps"):
+            sys.path.remove(p)
+            sys.path.insert(1, p)
+            break
+    
+    import importlib
+    importlib.invalidate_caches()
+    
+    # Verify the critical sub-package is reachable BEFORE anything
+    # tries to import it transitively (i.e. via logic.generate).
+    randomizer_init = SSHD_RANDO_PATH / "randomizer" / "__init__.py"
+    if not randomizer_init.is_file():
+        raise ImportError(
+            f"sshd-rando-backend is missing randomizer/__init__.py "
+            f"(looked in {SSHD_RANDO_PATH / 'randomizer'}). "
+            f"Contents: {list((SSHD_RANDO_PATH / 'randomizer').iterdir()) if (SSHD_RANDO_PATH / 'randomizer').is_dir() else 'DIR NOT FOUND'}"
+        )
+
+    # Force-import 'randomizer' from our backend so no stale/shadowed
+    # version from elsewhere can interfere.
+    import importlib.util
+    if "randomizer" in sys.modules:
+        del sys.modules["randomizer"]
+    spec = importlib.util.spec_from_file_location(
+        "randomizer",
+        str(randomizer_init),
+        submodule_search_locations=[str(SSHD_RANDO_PATH / "randomizer")],
+    )
+    randomizer_mod = importlib.util.module_from_spec(spec)
+    sys.modules["randomizer"] = randomizer_mod
+    spec.loader.exec_module(randomizer_mod)
+
     # Mock the GUI modules to avoid PySide6 dependency
     from unittest.mock import MagicMock
     

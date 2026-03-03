@@ -128,6 +128,11 @@ if hasattr(sys.modules[__name__], '__loader__') and hasattr(sys.modules[__name__
             except OSError:
                 pass
 
+    # Flush Python's import-finder caches so the freshly extracted
+    # directories are recognised immediately.
+    import importlib
+    importlib.invalidate_caches()
+
     SSHD_RANDO_AVAILABLE = True
     
     # Register cleanup function to delete temp directory on exit
