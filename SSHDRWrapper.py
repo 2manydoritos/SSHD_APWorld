@@ -15,98 +15,43 @@ import zipfile
 import random
 from typing import Tuple, Dict, Any
 
-# Detect if we're running from within an .apworld ZIP file or filesystem
-# Don't change directory during import - do it lazily when needed
-# Try multiple potential locations for sshd-rando
+# ---------------------------------------------------------------------------
+# Detect sshd-rando-backend.
+#
+# When loaded from an .apworld, __init__.py has ALREADY extracted sshd-rando-
+# backend (and _bundled_deps) into a temp directory and inserted them into
+# sys.path.  We look there first so we never create a competing extraction.
+# ---------------------------------------------------------------------------
 
-def _extract_sshd_rando_from_zip():
-    """Extract sshd-rando-backend from apworld ZIP to a temporary location if needed."""
-    current_file = Path(__file__).resolve()
-    
-    # Check if we're running from within a ZIP file (.apworld)
-    current_file_str = str(current_file)
-    if '.apworld' in current_file_str or '.zip' in current_file_str:
-        # We're in a ZIP - need to extract sshd-rando-backend
-        try:
-            # Find the ZIP file path
-            if '.apworld' in current_file_str:
-                zip_path_parts = current_file_str.split('.apworld')
-                zip_path = Path(zip_path_parts[0] + '.apworld')
-            else:
-                zip_path_parts = current_file_str.split('.zip')
-                zip_path = Path(zip_path_parts[0] + '.zip')
-            
-            if zip_path.exists() and zipfile.is_zipfile(zip_path):
-                # Create a temp directory for extraction
-                temp_dir = Path(tempfile.gettempdir()) / "sshd_apworld_extracted"
-                temp_dir.mkdir(parents=True, exist_ok=True)
-                
-                backend_dest = temp_dir / "sshd-rando-backend"
-                
-                # Only extract if not already extracted or if ZIP is newer
-                if not backend_dest.exists() or zip_path.stat().st_mtime > backend_dest.stat().st_mtime:
-                    # Extract sshd-rando-backend from ZIP
-                    with zipfile.ZipFile(zip_path, 'r') as zf:
-                        # Find all files under sshd/sshd-rando-backend/
-                        backend_files = [name for name in zf.namelist() 
-                                        if name.startswith('sshd/sshd-rando-backend/')]
-                        
-                        if backend_files:
-                            # Clean up old extraction
-                            if backend_dest.exists():
-                                shutil.rmtree(backend_dest)
-                            
-                            # Extract files
-                            for file_name in backend_files:
-                                # Remove 'sshd/' prefix to get relative path within backend
-                                relative_path = file_name[len('sshd/'):]
-                                target_path = temp_dir / relative_path
-                                
-                                # Create directories as needed
-                                if file_name.endswith('/'):
-                                    target_path.mkdir(parents=True, exist_ok=True)
-                                else:
-                                    target_path.parent.mkdir(parents=True, exist_ok=True)
-                                    with zf.open(file_name) as source:
-                                        with open(target_path, 'wb') as target:
-                                            shutil.copyfileobj(source, target)
-                            
-                            print(f"[SSHDRWrapper] Extracted sshd-rando-backend from {zip_path.name} to {backend_dest}")
-                            return backend_dest
-                else:
-                    print(f"[SSHDRWrapper] Using cached sshd-rando-backend from {backend_dest}")
-                    return backend_dest
-        except Exception as e:
-            print(f"[SSHDRWrapper] Warning: Failed to extract sshd-rando-backend from ZIP: {e}")
-            import traceback
-            traceback.print_exc()
-    
+def _find_sshd_rando_on_sys_path():
+    """Check sys.path for an already-extracted sshd-rando-backend."""
+    for p in sys.path:
+        candidate = Path(p)
+        if candidate.name == "sshd-rando-backend" and candidate.is_dir():
+            if (candidate / "logic").is_dir() and (candidate / "constants").is_dir():
+                return candidate
     return None
+
 
 def _find_sshd_rando_path():
     """Find sshd-rando-backend directory, checking multiple locations."""
+    # 1) Already on sys.path (set by __init__.py extraction)
+    on_path = _find_sshd_rando_on_sys_path()
+    if on_path:
+        return on_path
+
+    # 2) Filesystem locations (development / manual install)
     current_file = Path(__file__).resolve()
-    
-    # First, try extracting from ZIP if we're in an apworld
-    extracted_path = _extract_sshd_rando_from_zip()
-    if extracted_path and extracted_path.exists():
-        if (extracted_path / "logic").exists() and (extracted_path / "constants").exists():
-            return extracted_path
-    
     potential_paths = [
-        current_file.parent / "sshd-rando-backend",  # Bundled in apworld: sshd/sshd-rando-backend/
-        current_file.parent.parent / "sshd-rando-backend",  # One level up
-        current_file.parent.parent / "sshd-rando",  # Development: adjacent to SSHD_APWorld
-        Path.home() / "sshd-rando",  # User's home directory (manual install)
+        current_file.parent / "sshd-rando-backend",
+        current_file.parent.parent / "sshd-rando-backend",
+        current_file.parent.parent / "sshd-rando",
+        Path.home() / "sshd-rando",
     ]
-    
     for path in potential_paths:
-        # Check if path exists and has expected subdirectories (logic/ and constants/)
-        if path.exists() and path.is_dir():
-            # Verify it's actually sshd-rando by checking for key directories
-            if (path / "logic").exists() and (path / "constants").exists():
-                return path
-    
+        if path.is_dir() and (path / "logic").is_dir() and (path / "constants").is_dir():
+            return path
+
     return None
 
 POTENTIAL_SSHD_RANDO_PATHS = [
@@ -117,6 +62,8 @@ POTENTIAL_SSHD_RANDO_PATHS = [
 ]
 
 SSHD_RANDO_PATH = _find_sshd_rando_path()
+if SSHD_RANDO_PATH:
+    print(f"[SSHDRWrapper] Found sshd-rando-backend at: {SSHD_RANDO_PATH}")
 
 CURRENT_DIR = Path(__file__).parent
 

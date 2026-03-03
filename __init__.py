@@ -594,11 +594,10 @@ class SSHDWorld(World):
                 if candidate.exists() and (candidate / "data").exists():
                     backend_dir = candidate
             if not backend_dir:
-                # Also try SSHDRWrapper's cached extraction path
-                import tempfile
-                cached = Path(tempfile.gettempdir()) / "sshd_apworld_extracted" / "sshd-rando-backend"
-                if cached.exists() and (cached / "data").exists():
-                    backend_dir = cached
+                # Check SSHDRWrapper's resolved path (it scans sys.path + filesystem)
+                from .SSHDRWrapper import SSHD_RANDO_PATH as _wrapper_rando_path
+                if _wrapper_rando_path and _wrapper_rando_path.exists() and (_wrapper_rando_path / "data").exists():
+                    backend_dir = _wrapper_rando_path
             if not backend_dir and SSHD_RANDO_PATH and SSHD_RANDO_PATH.exists():
                 backend_dir = SSHD_RANDO_PATH
             
