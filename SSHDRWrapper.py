@@ -447,19 +447,38 @@ def generate_sshd_rando_mod(settings_dict: Dict[str, Any], output_dir: Path, see
             "The .apworld may not have the right binary for this Python version."
         ) from e
     
+    # ------------------------------------------------------------------
+    # Determine extract_path BEFORE any sshd-rando modules are imported
+    # so that filepathconstants.py picks up the correct absolute paths.
+    # ------------------------------------------------------------------
+    try:
+        from platform_utils import get_default_sshd_extract_path
+        default_path = str(get_default_sshd_extract_path())
+    except ImportError:
+        default_path = "C:\\ProgramData\\Archipelago\\sshd_extract"
+    extract_path = Path(settings_dict.get("extract_path", default_path)).resolve()
+    
+    # Set env vars that our patched filepathconstants.py reads at import time.
+    # SSHD_AP_EXTRACT_PATH  → overrides SSHD_EXTRACT_PATH (the romfs/exefs root)
+    # SSHD_AP_USERDATA_PATH → overrides userdata_path (cache, output, config dirs)
+    os.environ["SSHD_AP_EXTRACT_PATH"] = str(extract_path)
+    os.environ["SSHD_AP_USERDATA_PATH"] = str(extract_path.parent)
+    print(f"[SSHDRWrapper] Extract path: {extract_path}")
+    print(f"[SSHDRWrapper] Userdata path: {extract_path.parent}")
+    
+    # If filepathconstants was already imported (e.g. multi-world), force
+    # a reload so the new env vars take effect on all module-level constants.
+    if "filepathconstants" in sys.modules:
+        import importlib
+        importlib.reload(sys.modules["filepathconstants"])
+    
     # Initialize sshd-rando imports (lazy load)
     _initialize_sshd_rando()
     from logic.generate import generate
     from patches.allpatchhandler import AllPatchHandler
     from logic.config import write_config_to_file
     
-    # Check if romfs is extracted (use extract_path from settings_dict)
-    try:
-        from platform_utils import get_default_sshd_extract_path
-        default_path = str(get_default_sshd_extract_path())
-    except ImportError:
-        default_path = "C:\\ProgramData\\Archipelago\\sshd_extract"
-    extract_path = Path(settings_dict.get("extract_path", default_path))
+    # Check if romfs is extracted
     romfs_path = extract_path / "romfs"
     
     if not romfs_path.exists():
