@@ -145,6 +145,7 @@ This project is licensed under the AGPL License - see the [LICENSE](LICENSE) for
 ## Beta Testers
 
 - Aurox (aurox44) on Discord
+- [Terra](https://youtube.com/@TerraGuild)
 
 ## Support
 
