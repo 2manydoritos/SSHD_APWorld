@@ -1879,15 +1879,44 @@ pub extern "C" fn archipelago_check_item_buffer() {
                 return;
             }
 
-            // Item found - give it to the player
-            let _show_animation = (slot.flags & 0x01) != 0;
-            let _play_jingle = (slot.flags & 0x02) != 0;
+            // Item found — give it to the player.
+            //
+            // IMPORTANT: We inline the item spawn instead of calling
+            // give_item_with_sceneflag() because that function uses param1
+            // flag 0x580000 (bit 22 set), which spawns a *freestanding*
+            // item actor that waits for the player to physically collect it.
+            // Since Archipelago items are spawned at the null position
+            // (origin), freestanding items land at an unreachable location.
+            // Rupees/ammo auto-collect thanks to their large pickup radius,
+            // but key items (Bow, Harp, Clawshots, etc.) just sit there
+            // forever and the player never receives them.
+            //
+            // Using 0x180000 (bits 19+20 only, bit 22 clear) spawns an
+            // *event-triggered* item actor that immediately enters the
+            // "Link holds up item" sequence — exactly what
+            // give_item_with_archipelago_flag() uses.  This ensures ALL
+            // item types are given to the player regardless of position.
+            NUMBER_OF_ITEMS = 0;
+            ITEM_GET_BOTTLE_POUCH_SLOT = 0xFFFFFFFF;
 
-            // Always use 0xFF for sceneflag (no specific scene flag)
-            let sceneflag = 0xFF;
+            let new_itemid = dAcItem__determineFinalItemid(slot.item_id as u64);
 
-            // Call the existing give_item function
-            let item_actor = give_item_with_sceneflag(slot.item_id, sceneflag);
+            // 0x180000 = event-triggered item (immediate collection by player).
+            // 0xFF << 10 = sceneflag 0xFF in bits 10-17 → "no sceneflag to set".
+            let param1: u32 = (new_itemid as u32) | (0xFFu32 << 10) | 0x180000;
+
+            let item_actor: *mut dAcItem = actor::spawn_actor(
+                actor::ACTORID::ITEM,
+                (*ROOM_MGR).roomid.into(),
+                param1,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                0xFFFFFFFF,
+            ) as *mut dAcItem;
+
+            ITEM_GET_BOTTLE_POUCH_SLOT = 0xFFFFFFFF;
+            NUMBER_OF_ITEMS = 0;
 
             // Force textbox for AP-delivered items.  check_and_modify_item_actor
             // suppresses textboxes for common items (rupees, hearts, etc.) but for
