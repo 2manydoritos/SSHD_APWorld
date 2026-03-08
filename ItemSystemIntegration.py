@@ -51,6 +51,15 @@ class GameOffsets:
     ARCHIPELAGO_BUFFER_SIZE = 16  # Number of slots
     ARCHIPELAGO_BUFFER_SLOT_SIZE = 4  # Bytes per slot
 
+    # Save-file item flag addresses for direct flag writing fallback.
+    # These let us guarantee item delivery by writing the flag bit directly
+    # to the committed (SaveFile FA) and uncommitted (static) copies,
+    # bypassing the actor-spawn system entirely.
+    # Offsets verified against working cheat code in SSHDClient.py.
+    SAVEFILE_A = 0x5AEAD54             # FileMgr.FA start
+    FA_ITEMFLAGS = SAVEFILE_A + 0x9E4  # committed itemflags [u16; 64]
+    STATIC_ITEMFLAGS = 0x182E170       # uncommitted/working copy [u16; 64]
+
 
 # Player actions that indicate the player is "busy" and must NOT be given
 # a new item.  Values match the PLAYER_ACTIONS enum in player.rs.
@@ -285,6 +294,15 @@ class GameItemSystem:
         
         # Wait for game to process (buffer cleared when done)
         success = self._wait_for_item_processed(buffer_offset, expected_item_id=item_id)
+        
+        # ---- Direct-write fallback (belt-and-suspenders) --------------------
+        # The Rust actor-spawn path can silently fail for certain items
+        # (missing model archives, determineFinalItemid issues, etc.).
+        # Setting the item flag DIRECTLY in save memory guarantees the item
+        # reaches the player's inventory regardless of what happened on the
+        # game side.  If the Rust spawn DID work, the flag is already set
+        # and this write is a harmless no-op.
+        self._ensure_itemflag_set(item_id)
         
         if success:
             self._consecutive_failures = 0
@@ -557,6 +575,57 @@ class GameItemSystem:
         
         return None
     
+    # ---- Direct item-flag writing (guaranteed delivery fallback) --------
+
+    def _ensure_itemflag_set(self, item_id: int) -> None:
+        """Guarantee an item is in the player's inventory by setting its flag
+        directly in save memory.
+
+        In SSHD the item-flag index equals the game item ID, so no
+        separate mapping table is needed.  The flag is a single bit inside
+        the ``itemflags [u16; 64]`` bitfield array.  We write to BOTH the
+        committed (SaveFile FA) and uncommitted (static working) copies so
+        the change is immediately visible to the running game *and*
+        survives a save.
+
+        This is called after every buffer delivery attempt as a safety net.
+        If the Rust actor spawn succeeded, the game has already set the
+        flag and this is a harmless no-op.  If the spawn failed silently,
+        this ensures the item still reaches the player.
+
+        Note: for counter-based items (rupees, ammo, materials) this only
+        sets the "has collected at least one" flag bit and does NOT
+        increment the actual quantity counter.  Equipment, key items,
+        songs, and similar single-acquisition items are fully covered.
+        """
+        if not self.memory or not self.memory.connected:
+            return
+
+        # Item IDs above 215 are custom/virtual (Archipelago Item 216,
+        # traps 250+, goddess cubes 257+, Game Beatable 256).  These do
+        # not have a real item flag in the vanilla flag table.
+        if item_id > 215:
+            return
+
+        flag_id = item_id
+        word_idx = flag_id // 16
+        bit_idx = flag_id % 16
+        byte_off = word_idx * 2
+        mask = 1 << bit_idx
+
+        bases = (GameOffsets.FA_ITEMFLAGS, GameOffsets.STATIC_ITEMFLAGS)
+        for base in bases:
+            try:
+                current = self.memory.read_short(base + byte_off)
+                if current is not None and not (current & mask):
+                    self.memory.write_short(base + byte_off, current | mask)
+                    logger.info(
+                        f"[DirectFlag] Set itemflag {flag_id} "
+                        f"(word {word_idx}, bit {bit_idx}) at base 0x{base:x}"
+                    )
+            except Exception as exc:
+                logger.debug(f"[DirectFlag] Could not write flag {flag_id}: {exc}")
+
     def clear_buffer(self):
         """Clear all slots in item buffer."""
         if not self.buffer_addr:

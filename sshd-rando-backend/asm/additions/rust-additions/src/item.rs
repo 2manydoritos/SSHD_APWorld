@@ -1881,35 +1881,50 @@ pub extern "C" fn archipelago_check_item_buffer() {
 
             // Item found — give it to the player.
             //
-            // IMPORTANT: We inline the item spawn instead of calling
-            // give_item_with_sceneflag() because that function uses param1
-            // flag 0x580000 (bit 22 set), which spawns a *freestanding*
-            // item actor that waits for the player to physically collect it.
-            // Since Archipelago items are spawned at the null position
-            // (origin), freestanding items land at an unreachable location.
-            // Rupees/ammo auto-collect thanks to their large pickup radius,
-            // but key items (Bow, Harp, Clawshots, etc.) just sit there
-            // forever and the player never receives them.
+            // Design notes:
             //
-            // Using 0x180000 (bits 19+20 only, bit 22 clear) spawns an
-            // *event-triggered* item actor that immediately enters the
-            // "Link holds up item" sequence — exactly what
-            // give_item_with_archipelago_flag() uses.  This ensures ALL
-            // item types are given to the player regardless of position.
+            // 1. We DO NOT call dAcItem__determineFinalItemid(). The Python client already
+            //    resolves progressive items to their concrete tier (e.g. "Progressive Bow
+            //    #2" → Iron Bow with game ID 90).  The vanilla determineFinalItemid may
+            //    reject or transform the ID based on inventory state that does not match
+            //    the multiworld's logic, returning 0 for items it considers invalid —
+            //    which silently makes the item actor spawn as "nothing" and the player
+            //    never receives their item.
+            //
+            // 2. We use param1 flag 0x180000 (bits 19+20, bit 22 clear) instead of
+            //    give_item_with_sceneflag's 0x580000 (bit 22 set).  Bit 22 makes the item
+            //    actor *freestanding* (waits for physical pickup), while 0x180000 is
+            //    *event-triggered* and immediately enters the "Link holds up item"
+            //    sequence. This matches give_item_with_archipelago_flag().
+            //
+            // 3. We spawn the item at the player's position rather than null (origin) to
+            //    ensure the actor is in a valid location within the current room.
+
+            // Safety: skip if PLAYER_PTR is null (shouldn't happen if
+            // player_is_busy() passed, but guard anyway).
+            if PLAYER_PTR.is_null() {
+                return;
+            }
+
             NUMBER_OF_ITEMS = 0;
             ITEM_GET_BOTTLE_POUCH_SLOT = 0xFFFFFFFF;
 
-            let new_itemid = dAcItem__determineFinalItemid(slot.item_id as u64);
+            // Use item ID directly — no determineFinalItemid (see note 1).
+            let item_id = slot.item_id as u32;
 
-            // 0x180000 = event-triggered item (immediate collection by player).
-            // 0xFF << 10 = sceneflag 0xFF in bits 10-17 → "no sceneflag to set".
-            let param1: u32 = (new_itemid as u32) | (0xFFu32 << 10) | 0x180000;
+            // 0x180000 = event-triggered item (immediate collection).
+            // 0xFF << 10 = sceneflag 0xFF → "no sceneflag to set".
+            let param1: u32 = item_id | (0xFFu32 << 10) | 0x180000;
+
+            // Spawn at player position (note 3).
+            let mut pos = (*PLAYER_PTR).obj_base_members.base.pos;
+            let pos_ptr = &mut pos as *mut math::Vec3f;
 
             let item_actor: *mut dAcItem = actor::spawn_actor(
                 actor::ACTORID::ITEM,
                 (*ROOM_MGR).roomid.into(),
                 param1,
-                core::ptr::null_mut(),
+                pos_ptr,
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
                 0xFFFFFFFF,
@@ -1927,7 +1942,10 @@ pub extern "C" fn archipelago_check_item_buffer() {
                 (*item_actor).base.basebase.members.param1 &= !0x200u32;
             }
 
-            // Clear the slot after processing
+            // Clear the slot after processing — even on null actor result.
+            // The Python client provides a direct item-flag-write fallback
+            // that guarantees the item reaches the player's inventory
+            // regardless of whether the actor spawned successfully.
             slot.item_id = 0;
             slot.flags = 0;
             slot._reserved = [0, 0];
