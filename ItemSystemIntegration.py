@@ -391,56 +391,9 @@ class GameItemSystem:
         # Wait for game to process (buffer cleared when done)
         success = self._wait_for_item_processed(buffer_offset, expected_item_id=item_id)
         
-        # ---- Wrong-buffer detection -----------------------------------------
-        # After the game processes the buffer, it spawns an item actor whose
-        # collection sequence sets the itemflag within a few frames.
-        # If we're on a FALSE-POSITIVE buffer address, the slot appeared
-        # "cleared" (random memory activity) but no actor was spawned, so the
-        # flag will NOT be set.
-        #
-        # Strategy: wait a short time for the flag to be set by the game,
-        # then READ it (without writing).  If it's still not set despite a
-        # "successful" buffer clear, we're on the wrong buffer → cycle.
-        #
-        # This check only runs until the buffer is verified (first successful
-        # flag confirmation).  After that, the 250ms delay is skipped.
-        #
-        # After the check, _ensure_itemflag_set() writes the flag as a
-        # belt-and-suspenders fallback regardless.
-        if success and item_id <= 215 and not self._buffer_verified:
-            # Give the game 15 frames (~250ms) to set the flag via the
-            # actor collection sequence.  Event-triggered items (0x180000)
-            # begin collection immediately, so this is generous.
-            for _wait in range(15):
-                time.sleep(1.0 / 60.0)
-            game_set_flag = self._check_itemflag(item_id)
-            
-            if game_set_flag:
-                self._buffer_verified = True
-                logger.info(
-                    "[BufferVerified] Game confirmed item flag — buffer "
-                    "address is correct. Skipping verification for future items."
-                )
-            else:
-                logger.warning(
-                    f"[WrongBuffer?] Buffer reported item {item_id} processed, "
-                    f"but itemflag is NOT set after 250ms! This buffer address "
-                    f"is likely a false positive."
-                )
-                success = False  # Force retry
-                if len(self._candidate_buffer_addrs) > 1:
-                    self._cycle_to_next_buffer()
-                    self._buffer_verified = False  # reset for new candidate
-                else:
-                    logger.error(
-                        "[WrongBuffer?] No other buffer candidates available. "
-                        "The AP game mod may not be loaded — verify romfs "
-                        "patches are installed in Ryujinx."
-                    )
-        
         # ---- Direct-write fallback (belt-and-suspenders) --------------------
         # The Rust actor-spawn path can silently fail for certain items
-        # (missing model archives, determineFinalItemid issues, etc.).
+        # (e.g. if the OARC model archive fix isn't compiled yet).
         # Setting the item flag DIRECTLY in save memory guarantees the item
         # reaches the player's inventory regardless of what happened on the
         # game side.  If the Rust spawn DID work, the flag is already set
