@@ -385,38 +385,95 @@ class _LinuxProcessMemory:
             raise ProcessMemoryError(f"{maps_path} not found — process gone?")
         return regions
 
-    def enumerate_scannable_regions(self, min_size: int = 0) -> List[MemoryRegion]:
+    # File extensions / path fragments that identify shared-library or
+    # data-file mappings we never need to scan for game memory.
+    _SKIP_EXTENSIONS = (
+        '.so', '.py', '.pyc', '.pyo',
+        '.dat', '.cache', '.bin',
+        '.ttf', '.otf', '.ttc',
+        '.gz', '.xz', '.zst', '.bz2',
+        '.conf', '.locale', '.txt', '.json', '.xml', '.yaml', '.yml',
+        '.png', '.jpg', '.svg', '.ico',
+        '.dll', '.exe', '.pdb',
+        '.mo', '.gmo',  # gettext
+    )
+    _SKIP_PATH_FRAGMENTS = (
+        '/usr/lib', '/usr/share', '/lib/', '/lib64/',
+        '/etc/', '/nix/store', '/gnu/store',
+        '/proc/', '/sys/',
+    )
+
+    @staticmethod
+    def _is_library_or_data(pathname: str) -> bool:
+        """Return True if *pathname* is clearly a shared library or data file.
+
+        These are things like ``/usr/lib/libc.so.6`` or ``/usr/share/locale/…``.
+        We keep anonymous regions, ``[heap]``, ``[anon:…]``, ``/memfd:…``,
+        ``/dev/shm/…``, and anything else that could plausibly hold game RAM.
+        """
+        if not pathname:
+            return False                    # anonymous — keep
+        if pathname.startswith('['):
+            return False                    # [heap], [anon:*], [stack], [vdso] — keep
+        if 'memfd:' in pathname:
+            return False                    # memfd anonymous file — keep
+        if pathname.startswith('/dev/'):
+            return False                    # /dev/shm etc. — keep
+
+        # Check known library/data extensions (handles .so.6 via checking each
+        # dot-separated suffix: .so.6 → we check '.6' then '.so.6')
+        lower = pathname.lower()
+        for ext in _LinuxProcessMemory._SKIP_EXTENSIONS:
+            if lower.endswith(ext):
+                return True
+        # Catch versioned .so files like libfoo.so.1.2.3
+        if '.so.' in lower or lower.endswith('.so'):
+            return True
+
+        # Check known uninteresting path prefixes
+        for frag in _LinuxProcessMemory._SKIP_PATH_FRAGMENTS:
+            if frag in lower:
+                return True
+
+        return False
+
+    def enumerate_scannable_regions(
+        self, min_size: int = 0, *, include_file_backed: bool = False,
+    ) -> List[MemoryRegion]:
         """Return only the regions worth scanning for game data.
 
         Filters applied (in order):
           1. Must be readable.
-          2. Must be anonymous (no file backing) — game memory is never
-             mapped from a .so or other regular file.
+          2. Skip regions that are clearly shared-library or data-file
+             mappings (e.g. ``/usr/lib/libc.so.6``).  Keeps anonymous
+             regions, ``[heap]``, ``/memfd:*``, ``/dev/shm/*``, etc.
+             Pass *include_file_backed=True* to disable this filter.
           3. Must be >= *min_size* bytes (default: _MIN_SCAN_REGION_SIZE).
-             Tiny anonymous maps are JIT metadata, thread stacks, etc.
-          4. Adjacent anonymous regions with identical permissions are
-             **coalesced** into one, so the scanner issues fewer reads.
+          4. Adjacent qualifying regions with identical permissions are
+             **coalesced** into one, reducing iteration overhead.
 
-        On a typical Ryujinx process this reduces ~3 000 regions down to
-        ~20-40 large ones, cutting scan time from minutes to seconds.
+        On a typical Ryujinx process this reduces thousands of regions
+        down to a few dozen, cutting scan time from minutes to seconds.
         """
         if min_size <= 0:
             min_size = self._MIN_SCAN_REGION_SIZE
 
         raw = self.enumerate_regions()
 
-        # Step 1-2: readable + anonymous only
-        candidates = [
-            r for r in raw
-            if r.is_readable and r.is_anonymous
-        ]
+        # Step 1-2: readable + not a library/data file
+        if include_file_backed:
+            candidates = [r for r in raw if r.is_readable]
+        else:
+            candidates = [
+                r for r in raw
+                if r.is_readable and not self._is_library_or_data(r.pathname)
+            ]
 
         # Step 3: coalesce adjacent regions (they often fragment)
         coalesced: List[MemoryRegion] = []
         for r in candidates:
             if coalesced and coalesced[-1].perms == r.perms \
                     and coalesced[-1].base + coalesced[-1].size == r.base:
-                # Extend the previous region
                 coalesced[-1] = MemoryRegion(
                     coalesced[-1].base,
                     coalesced[-1].size + r.size,

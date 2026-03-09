@@ -691,76 +691,105 @@ class RyujinxMemoryReader:
             regions_scanned = 0
             
             # Enumerate memory regions.  On Linux, use the optimised filter
-            # that skips file-backed/tiny regions and coalesces adjacent maps,
-            # reducing ~3 000 regions to ~20-40 and cutting scan time from
-            # minutes to seconds.
-            if hasattr(self.pm, 'enumerate_scannable_regions'):
-                readable_regions = self.pm.enumerate_scannable_regions()
-                all_count = len(self.pm.enumerate_regions())
+            # that skips library/data-file regions and coalesces adjacent maps.
+            # We try up to three tiers:
+            #   Tier 1: filtered (anonymous/memfd/heap, >= 1 MB) — fastest
+            #   Tier 2: all readable >= 1 MB — catches unusual mappings
+            #   Tier 3: all readable (unfiltered) — last resort
+            has_scannable = hasattr(self.pm, 'enumerate_scannable_regions')
+            all_regions = self.pm.enumerate_regions()
+            all_count = len(all_regions)
+
+            if has_scannable:
+                scan_tiers = [
+                    ("filtered (skip libraries, >= 1 MB)",
+                     lambda: self.pm.enumerate_scannable_regions()),
+                    ("all readable >= 1 MB",
+                     lambda: self.pm.enumerate_scannable_regions(
+                         include_file_backed=True)),
+                    ("all readable (unfiltered)",
+                     lambda: [r for r in all_regions if r.is_readable]),
+                ]
             else:
-                all_regions = self.pm.enumerate_regions()
-                readable_regions = [r for r in all_regions if r.is_readable]
-                all_count = len(all_regions)
-            total_scan_bytes = sum(r.size for r in readable_regions)
-            print(f"[DEBUG] Scanning {len(readable_regions)} regions "
-                  f"({total_scan_bytes / (1024*1024):.0f} MB) out of {all_count} total")
+                scan_tiers = [
+                    ("all readable",
+                     lambda: [r for r in all_regions if r.is_readable]),
+                ]
 
             # Collect candidate addresses for the game base signature
             best_base = None
             best_score = -1
 
-            for region in readable_regions:
-                regions_scanned += 1
-                region_end = region.base + region.size
-                scan_pos   = region.base
+            for tier_label, tier_fn in scan_tiers:
+                readable_regions = tier_fn()
+                total_scan_bytes = sum(r.size for r in readable_regions)
+                print(f"[SCAN] Tier '{tier_label}': {len(readable_regions)} regions "
+                      f"({total_scan_bytes / (1024*1024):.0f} MB) out of {all_count} total")
 
-                while scan_pos < region_end:
-                    to_read = min(chunk_size, region_end - scan_pos)
-                    try:
-                        data = self.pm.read_bytes(scan_pos, to_read)
-                        chunks_scanned += 1
+                tier_start = time.time()
+                chunks_scanned = 0
+                regions_scanned = 0
 
-                        if chunks_scanned % 100 == 0:
-                            print(f"[DEBUG] Scanned {chunks_scanned} chunks, address: 0x{scan_pos:X}")
+                for region in readable_regions:
+                    regions_scanned += 1
+                    region_end = region.base + region.size
+                    scan_pos   = region.base
 
-                        # Search for game base signature
-                        search_offset = 0
-                        while True:
-                            sig_offset = data.find(MEMORY_SIGNATURE, search_offset)
-                            if sig_offset == -1:
-                                break
+                    while scan_pos < region_end:
+                        to_read = min(chunk_size, region_end - scan_pos)
+                        try:
+                            data = self.pm.read_bytes(scan_pos, to_read)
+                            chunks_scanned += 1
 
-                            candidate = scan_pos + sig_offset
-                            score = self._validate_base_address(candidate)
-                            print(f"[FOUND] Signature at 0x{candidate:X} - Score: {score}/8")
+                            if chunks_scanned % 100 == 0:
+                                print(f"[DEBUG] Scanned {chunks_scanned} chunks, address: 0x{scan_pos:X}")
 
-                            if score > best_score:
-                                best_score = score
-                                best_base = candidate
+                            # Search for game base signature
+                            search_offset = 0
+                            while True:
+                                sig_offset = data.find(MEMORY_SIGNATURE, search_offset)
+                                if sig_offset == -1:
+                                    break
 
-                            # High-confidence match — stop scanning immediately
-                            if best_score >= 6:
-                                break
+                                candidate = scan_pos + sig_offset
+                                score = self._validate_base_address(candidate)
+                                print(f"[FOUND] Signature at 0x{candidate:X} - Score: {score}/8")
 
-                            search_offset = sig_offset + 1
+                                if score > best_score:
+                                    best_score = score
+                                    best_base = candidate
 
-                    except Exception:
-                        pass  # skip unreadable sub-chunks within this region
+                                # High-confidence match — stop scanning immediately
+                                if best_score >= 6:
+                                    break
 
-                    # Stop reading more chunks once we have a high-confidence match
+                                search_offset = sig_offset + 1
+
+                        except Exception:
+                            pass  # skip unreadable sub-chunks within this region
+
+                        # Stop reading more chunks once we have a high-confidence match
+                        if best_score >= 6:
+                            break
+                        scan_pos += to_read
+
+                    # Early exit once we have a high-confidence base
                     if best_score >= 6:
                         break
-                    scan_pos += to_read
 
-                # Early exit once we have a high-confidence base
-                if best_score >= 6:
-                    break
+                tier_elapsed = time.time() - tier_start
+                print(f"[SCAN] Tier '{tier_label}' took {tier_elapsed:.1f}s, "
+                      f"{chunks_scanned} chunks in {regions_scanned} regions")
+
+                if best_base is not None:
+                    break  # found it, skip remaining tiers
+                print(f"[SCAN] Tier '{tier_label}' found nothing, trying next tier...")
 
             base_elapsed = time.time() - start_time
             print(f"[SCAN] Base scan took {base_elapsed:.1f}s, {chunks_scanned} chunks in {regions_scanned} regions")
             
             if best_base is None:
-                print(f"[FAIL] No signatures found")
+                print(f"[FAIL] No signatures found in any tier")
                 logger.error("Could not find SSHD signature in memory")
                 return False
             
@@ -788,11 +817,14 @@ class RyujinxMemoryReader:
             magic_scan_start = max(best_base - PRESCAN_RANGE, 0x10000)
             magic_scan_end = best_base + PRESCAN_RANGE
 
-            # Filter to only regions within the prescan range
+            # Filter to only regions within the prescan range.
+            # Use ALL readable regions here (not the filtered tier list) since
+            # the magic buffers may be in a different mapping type than the
+            # main game signature.
+            all_readable = [r for r in all_regions if r.is_readable]
             magic_regions = [
-                r for r in readable_regions
-                if r.is_readable
-                and r.base + r.size > magic_scan_start
+                r for r in all_readable
+                if r.base + r.size > magic_scan_start
                 and r.base < magic_scan_end
             ]
 
