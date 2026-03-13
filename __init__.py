@@ -253,6 +253,32 @@ class SSHDContainer(APPlayerContainer):
         opened_zipfile.writestr("data", b64encode(bytes(json.dumps(self.data), "utf-8")))
 
 
+# Progressive stage items — these exist in ITEM_TABLE for internal tier
+# resolution (client maps "Progressive Bow" → "Iron Bow" → "Sacred Bow") but
+# must NOT appear in item_name_to_id.  Exposing them would let /send bypass
+# progressive logic (e.g. "/send Player1 Bow" fuzzy-matching "Iron Bow"
+# instead of "Progressive Bow").
+PROGRESSIVE_STAGE_ITEMS: set[str] = {
+    # Sword stages (Progressive Sword covers all of these)
+    "Goddess Sword", "Goddess Longsword", "Goddess White Sword",
+    "Master Sword", "True Master Sword",
+    # Bow stages (Progressive Bow covers these)
+    "Iron Bow", "Sacred Bow",
+    # Beetle stages (Progressive Beetle covers these)
+    "Hook Beetle", "Quick Beetle", "Tough Beetle",
+    # Slingshot stages (Progressive Slingshot covers these)
+    "Scattershot",
+    # Mitts stages (Progressive Mitts covers these)
+    "Mogma Mitts",
+    # Bug Net stages (Progressive Bug Net covers these)
+    "Big Bug Net",
+    # Wallet stages (Progressive Wallet covers these)
+    "Big Wallet", "Giant Wallet", "Tycoon Wallet",
+    # Pouch stages (Progressive Pouch covers these)
+    "Pouch Expansion",
+}
+
+
 class SSHDWorld(World):
     """
     The Legend of Zelda: Skyward Sword HD for Ryujinx
@@ -319,10 +345,12 @@ class SSHDWorld(World):
     }
     
     # Item and location tables
+    # Excludes progressive stage items (Iron Bow, Sacred Bow, etc.) so /send
+    # can only target the progressive versions (Progressive Bow, etc.).
     item_name_to_id: ClassVar[dict[str, int]] = {
         name: data.code
         for name, data in ITEM_TABLE.items()
-        if data.code is not None
+        if data.code is not None and name not in PROGRESSIVE_STAGE_ITEMS
     }
     
     location_name_to_id: ClassVar[dict[str, int]] = {
@@ -1045,25 +1073,7 @@ class SSHDWorld(World):
         
         # Items that are stage names for progressive chains — must NEVER be in the AP pool.
         # sshd-rando uses these internally but the Archipelago pool uses only progressive names.
-        PROGRESSIVE_STAGE_ITEMS = {
-            # Sword stages (Progressive Sword covers all of these)
-            "Goddess Sword", "Goddess Longsword", "Goddess White Sword",
-            "Master Sword", "True Master Sword",
-            # Bow stages (Progressive Bow covers these)
-            "Iron Bow", "Sacred Bow",
-            # Beetle stages (Progressive Beetle covers these)
-            "Hook Beetle", "Quick Beetle", "Tough Beetle",
-            # Slingshot stages (Progressive Slingshot covers these)
-            "Scattershot",
-            # Mitts stages (Progressive Mitts covers these)
-            "Mogma Mitts",
-            # Bug Net stages (Progressive Bug Net covers these)
-            "Big Bug Net",
-            # Wallet stages (Progressive Wallet covers these)
-            "Big Wallet", "Giant Wallet", "Tycoon Wallet",
-            # Pouch stages (Progressive Pouch covers these)
-            "Pouch Expansion",
-        }
+        # Uses the module-level set (also used to filter item_name_to_id).
         
         # Map sshd-rando stage names back to their progressive item name.
         # When sshd-rando places e.g. "Goddess Longsword" at a location, that's

@@ -1368,13 +1368,17 @@ pub extern "C" fn resolve_progressive_item_models(
         }
 
         match item_id {
-            // Progressive Sword - always use Practice Sword model
-            // (can't know which tier the player will get next)
-            10 => {
+            // Progressive Sword — always use Practice Sword model.
+            // Also handle individual sword tier IDs (9, 11-14) that
+            // determineFinalItemid may resolve to — these have oarc=null
+            // in items.yaml so their game-table arc names may not exist
+            // in Object/NX.  Using GetSwordA (which IS in Object/NX)
+            // ensures a valid model is always available.
+            10 | 9 | 11 | 12 | 13 | 14 => {
                 return c"GetSwordA".as_ptr();
             },
-            // Progressive Bow
-            19 => {
+            // Progressive Bow + individual tiers
+            19 | 90 | 91 => {
                 if flag::check_itemflag(flag::ITEMFLAGS::BOW) == 0 {
                     return c"GetBowA".as_ptr();
                 }
@@ -1383,15 +1387,15 @@ pub extern "C" fn resolve_progressive_item_models(
                 }
                 return c"GetBowC".as_ptr();
             },
-            // Progressive Slingshot
-            52 => {
+            // Progressive Slingshot + Scattershot
+            52 | 105 => {
                 if flag::check_itemflag(flag::ITEMFLAGS::SLINGSHOT) == 0 {
                     return c"GetPachinkoA".as_ptr();
                 }
                 return c"GetPachinkoB".as_ptr();
             },
-            // Progressive Beetle
-            53 => {
+            // Progressive Beetle + individual tiers
+            53 | 75 | 76 | 77 => {
                 if flag::check_itemflag(flag::ITEMFLAGS::BEETLE) == 0 {
                     return c"GetBeetleA".as_ptr();
                 }
@@ -1403,22 +1407,22 @@ pub extern "C" fn resolve_progressive_item_models(
                 }
                 return c"GetBeetleD".as_ptr();
             },
-            // Progressive Mitts
-            56 => {
+            // Progressive Mitts + Mogma Mitts
+            56 | 99 => {
                 if flag::check_itemflag(flag::ITEMFLAGS::DIGGING_MITTS) == 0 {
                     return c"GetMoleGloveA".as_ptr();
                 }
                 return c"GetMoleGloveB".as_ptr();
             },
-            // Progressive Bug Net
-            71 => {
+            // Progressive Bug Net + Big Bug Net
+            71 | 140 => {
                 if flag::check_itemflag(flag::ITEMFLAGS::BUG_NET) == 0 {
                     return c"GetNetA".as_ptr();
                 }
                 return c"GetNetB".as_ptr();
             },
-            // Progressive Wallet
-            108 => {
+            // Progressive Wallet + individual tiers
+            108 | 109 | 110 | 111 => {
                 if flag::check_itemflag(flag::ITEMFLAGS::MEDIUM_WALLET) == 0 {
                     return c"GetPurseB".as_ptr();
                 }
@@ -1475,9 +1479,15 @@ unsafe fn is_oarc_loaded(oarc_name: *const c_char) -> bool {
     false
 }
 
-/// Load a single OARC from Object/NX if not already loaded.
+/// Load a single OARC from Object/NX into both the global ARC_MGR table
+/// and the current stage's arc table.  dAcItem::init only queries the
+/// STAGE table, so having the OARC in ARC_MGR alone is not sufficient.
 unsafe fn load_oarc_if_needed(oarc_name: *const c_char) {
+    // Load into ARC_MGR (global table) for general availability.
     if !is_oarc_loaded(oarc_name) {
+        if ARC_MGR.is_null() {
+            return;
+        }
         let entries_ptr = (*ARC_MGR).entries_table.entries;
         if entries_ptr.is_null() {
             return;
@@ -1490,100 +1500,150 @@ unsafe fn load_oarc_if_needed(oarc_name: *const c_char) {
             WORK2_HEAP,
         );
     }
+
+    // Also load into the STAGE table.  This is the table that
+    // dAcItem::init actually queries when setting up model data.
+    // getArcOrLoadFromDisk is idempotent — if the entry already
+    // exists it simply returns true.
+    if !mem::STAGE_ARC_MGR.is_null() {
+        let stage_table = &mut (*mem::STAGE_ARC_MGR).entries_table as *mut mem::ArcEntryTable;
+        dRawArcTable_c__getArcOrLoadFromDisk(
+            stage_table,
+            oarc_name,
+            c"Object/NX".as_ptr(),
+            WORK2_HEAP,
+        );
+    }
 }
 
-/// Load all OARCs needed for an AP item so the actor can spawn with the
-/// correct 3D model.  Called before spawn_actor() in the AP buffer loop.
+/// Pre-load OARCs needed for an AP item into both ARC_MGR's global table
+/// AND the current stage's arc table.  Called BEFORE spawn_actor() so the
+/// OARC model data is available when dAcItem::init runs.
 ///
-/// Uses dRawArcTable_c__getArcOrLoadFromDisk which loads the OARC from
-/// romfs/Object/NX (or ModReplace via the automatic hook).
+/// dAcItem::init queries the STAGE table (not ARC_MGR) to find model data.
+/// If the OARC isn't in the stage table, init fails silently and the item
+/// actor never displays.  Loading into both tables ensures availability
+/// regardless of which table a given code path queries.
 ///
 /// This table is derived from sshd-rando-backend/data/items.yaml.
 /// For progressive items, we load ALL tier OARCs so the correct model is
 /// available regardless of which tier the player is at.
 /// Items not listed here are ObjectPack-native (already loaded globally).
 unsafe fn ensure_ap_item_oarcs_loaded(item_id: u16) {
-    if ARC_MGR.is_null() || WORK2_HEAP.is_null() {
-        return; // Safety: can't load without heap/manager
+    if WORK2_HEAP.is_null() {
+        return; // Safety: can't load without heap
     }
     match item_id {
-        // Progressive Sword (Practice Sword model)
-        10 => load_oarc_if_needed(c"GetSwordA".as_ptr()),
+        // Progressive Sword (Practice Sword model) + individual tiers
+        10 | 9 | 11 | 12 | 13 | 14 => {
+            load_oarc_if_needed(c"GetSwordA".as_ptr());
+        },
         // Goddess's Harp + song items
         16 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 => {
             load_oarc_if_needed(c"GetHarp".as_ptr());
         },
-        // Progressive Bow — load all tiers
-        19 => {
+        // Progressive Bow — load all tiers + individual tier ids
+        19 | 90 | 91 => {
             load_oarc_if_needed(c"GetBowA".as_ptr());
             load_oarc_if_needed(c"GetBowB".as_ptr());
             load_oarc_if_needed(c"GetBowC".as_ptr());
         },
         // Clawshots
-        20 => load_oarc_if_needed(c"GetHookShot".as_ptr()),
+        20 => {
+            load_oarc_if_needed(c"GetHookShot".as_ptr());
+        },
         // Spiral Charge
-        21 => load_oarc_if_needed(c"GetBirdStatue".as_ptr()),
+        21 => {
+            load_oarc_if_needed(c"GetBirdStatue".as_ptr());
+        },
         // Boss keys
-        25 => load_oarc_if_needed(c"GetKeyBoss2A".as_ptr()),
-        26 => load_oarc_if_needed(c"GetKeyBoss2B".as_ptr()),
-        27 => load_oarc_if_needed(c"GetKeyBoss2C".as_ptr()),
-        28 => load_oarc_if_needed(c"GetKeyKakera".as_ptr()),
-        29 => load_oarc_if_needed(c"GetKeyBossA".as_ptr()),
-        30 => load_oarc_if_needed(c"GetKeyBossB".as_ptr()),
-        31 => load_oarc_if_needed(c"GetKeyBossC".as_ptr()),
+        25 => {
+            load_oarc_if_needed(c"GetKeyBoss2A".as_ptr());
+        },
+        26 => {
+            load_oarc_if_needed(c"GetKeyBoss2B".as_ptr());
+        },
+        27 => {
+            load_oarc_if_needed(c"GetKeyBoss2C".as_ptr());
+        },
+        28 => {
+            load_oarc_if_needed(c"GetKeyKakera".as_ptr());
+        },
+        29 => {
+            load_oarc_if_needed(c"GetKeyBossA".as_ptr());
+        },
+        30 => {
+            load_oarc_if_needed(c"GetKeyBossB".as_ptr());
+        },
+        31 => {
+            load_oarc_if_needed(c"GetKeyBossC".as_ptr());
+        },
         // Gust Bellows
-        49 => load_oarc_if_needed(c"GetVacuum".as_ptr()),
-        // Progressive Slingshot
-        52 => {
+        49 => {
+            load_oarc_if_needed(c"GetVacuum".as_ptr());
+        },
+        // Progressive Slingshot + Scattershot
+        52 | 105 => {
             load_oarc_if_needed(c"GetPachinkoA".as_ptr());
             load_oarc_if_needed(c"GetPachinkoB".as_ptr());
         },
-        // Progressive Beetle
-        53 => {
+        // Progressive Beetle + individual tiers
+        53 | 75 | 76 | 77 => {
             load_oarc_if_needed(c"GetBeetleA".as_ptr());
             load_oarc_if_needed(c"GetBeetleB".as_ptr());
             load_oarc_if_needed(c"GetBeetleC".as_ptr());
             load_oarc_if_needed(c"GetBeetleD".as_ptr());
         },
-        // Progressive Mitts
-        56 => {
+        // Progressive Mitts + Mogma Mitts
+        56 | 99 => {
             load_oarc_if_needed(c"GetMoleGloveA".as_ptr());
             load_oarc_if_needed(c"GetMoleGloveB".as_ptr());
         },
         // 10 Deku Seeds
-        60 => load_oarc_if_needed(c"GetSeedSet".as_ptr()),
+        60 => {
+            load_oarc_if_needed(c"GetSeedSet".as_ptr());
+        },
         // Bottles/potions
-        65 | 66 => load_oarc_if_needed(c"GetBottleMuteki".as_ptr()),
+        65 | 66 => {
+            load_oarc_if_needed(c"GetBottleMuteki".as_ptr());
+        },
         // Water Dragon's Scale
-        68 => load_oarc_if_needed(c"GetUroko".as_ptr()),
+        68 => {
+            load_oarc_if_needed(c"GetUroko".as_ptr());
+        },
         // Medals (Bug, Heart, Rupee, Treasure, Potion, Cursed, Life)
         70 | 100 | 101 | 102 | 103 | 104 | 114 => {
             load_oarc_if_needed(c"GetMedal".as_ptr());
         },
-        // Progressive Bug Net
-        71 => {
+        // Progressive Bug Net + Big Bug Net
+        71 | 140 => {
             load_oarc_if_needed(c"GetNetA".as_ptr());
             load_oarc_if_needed(c"GetNetB".as_ptr());
         },
         // Sacred Water
-        74 => load_oarc_if_needed(c"GetBottleHoly".as_ptr()),
-        // Individual beetle tiers
-        75 => load_oarc_if_needed(c"GetBeetleB".as_ptr()),
-        76 => load_oarc_if_needed(c"GetBeetleC".as_ptr()),
-        77 => load_oarc_if_needed(c"GetBeetleD".as_ptr()),
+        74 => {
+            load_oarc_if_needed(c"GetBottleHoly".as_ptr());
+        },
         // Heart Potion / Heart Potion Plus
-        78 | 79 => load_oarc_if_needed(c"GetBottleKusuri".as_ptr()),
+        78 | 79 => {
+            load_oarc_if_needed(c"GetBottleKusuri".as_ptr());
+        },
         // Heart Potion Plus Plus
-        81 => load_oarc_if_needed(c"GetBottleKusuriS".as_ptr()),
+        81 => {
+            load_oarc_if_needed(c"GetBottleKusuriS".as_ptr());
+        },
         // Stamina Potion / Plus
-        84 | 85 => load_oarc_if_needed(c"GetBottleGuts".as_ptr()),
+        84 | 85 => {
+            load_oarc_if_needed(c"GetBottleGuts".as_ptr());
+        },
         // Air Potion / Plus
-        86 | 87 => load_oarc_if_needed(c"GetBottleAir".as_ptr()),
-        // Iron Bow / Sacred Bow
-        90 => load_oarc_if_needed(c"GetBowB".as_ptr()),
-        91 => load_oarc_if_needed(c"GetBowC".as_ptr()),
+        86 | 87 => {
+            load_oarc_if_needed(c"GetBottleAir".as_ptr());
+        },
         // Bomb Bag
-        92 => load_oarc_if_needed(c"GetBombBag".as_ptr()),
+        92 => {
+            load_oarc_if_needed(c"GetBombBag".as_ptr());
+        },
         // Heart Container
         93 => {
             load_oarc_if_needed(c"GetHeartUtuwa".as_ptr());
@@ -1595,89 +1655,136 @@ unsafe fn ensure_ap_item_oarcs_loaded(item_id: u16) {
             load_oarc_if_needed(c"GetTriForceSingle".as_ptr());
         },
         // Sea Chart
-        98 => load_oarc_if_needed(c"GetMapSea".as_ptr()),
-        // Mogma Mitts (standalone)
-        99 => load_oarc_if_needed(c"GetMoleGloveB".as_ptr()),
-        // Scattershot (standalone)
-        105 => load_oarc_if_needed(c"GetPachinkoB".as_ptr()),
-        // Progressive Wallet
-        108 => {
+        98 => {
+            load_oarc_if_needed(c"GetMapSea".as_ptr());
+        },
+        // Progressive Wallet + individual tiers
+        108 | 109 | 110 | 111 => {
             load_oarc_if_needed(c"GetPurseB".as_ptr());
             load_oarc_if_needed(c"GetPurseC".as_ptr());
             load_oarc_if_needed(c"GetPurseD".as_ptr());
             load_oarc_if_needed(c"GetPurseE".as_ptr());
         },
-        // Individual wallets
-        109 => load_oarc_if_needed(c"GetPurseC".as_ptr()),
-        110 => load_oarc_if_needed(c"GetPurseD".as_ptr()),
-        111 => load_oarc_if_needed(c"GetPurseE".as_ptr()),
         // Progressive Pouch / Pouch Expansion
-        112 => {
+        112 | 113 => {
             load_oarc_if_needed(c"GetPouchA".as_ptr());
             load_oarc_if_needed(c"GetPouchB".as_ptr());
         },
-        113 => load_oarc_if_needed(c"GetPouchB".as_ptr()),
         // Wooden Shield
-        116 => load_oarc_if_needed(c"GetShieldWood".as_ptr()),
+        116 => {
+            load_oarc_if_needed(c"GetShieldWood".as_ptr());
+        },
         // Hylian Shield
-        125 => load_oarc_if_needed(c"GetShieldHylia".as_ptr()),
+        125 => {
+            load_oarc_if_needed(c"GetShieldHylia".as_ptr());
+        },
         // Revitalizing Potion / Plus
-        126 | 127 => load_oarc_if_needed(c"GetBottleRepair".as_ptr()),
+        126 | 127 => {
+            load_oarc_if_needed(c"GetBottleRepair".as_ptr());
+        },
         // Small Seed Satchel
-        128 => load_oarc_if_needed(c"GetSpareSeedA".as_ptr()),
+        128 => {
+            load_oarc_if_needed(c"GetSpareSeedA".as_ptr());
+        },
         // Small Quiver
-        131 => load_oarc_if_needed(c"GetSpareQuiverA".as_ptr()),
+        131 => {
+            load_oarc_if_needed(c"GetSpareQuiverA".as_ptr());
+        },
         // Small Bomb Bag
-        134 => load_oarc_if_needed(c"GetSpareBombBagA".as_ptr()),
+        134 => {
+            load_oarc_if_needed(c"GetSpareBombBagA".as_ptr());
+        },
         // Whip
-        137 => load_oarc_if_needed(c"GetWhip".as_ptr()),
+        137 => {
+            load_oarc_if_needed(c"GetWhip".as_ptr());
+        },
         // Fireshield Earrings
-        138 => load_oarc_if_needed(c"GetEarring".as_ptr()),
-        // Big Bug Net (standalone)
-        140 => load_oarc_if_needed(c"GetNetB".as_ptr()),
+        138 => {
+            load_oarc_if_needed(c"GetEarring".as_ptr());
+        },
         // Cawlin's Letter + Archipelago Item
-        158 | 216 => load_oarc_if_needed(c"GetKobunALetter".as_ptr()),
+        158 | 216 => {
+            load_oarc_if_needed(c"GetKobunALetter".as_ptr());
+        },
         // Beedle's Insect Cage
-        159 => load_oarc_if_needed(c"GetTerryCage".as_ptr()),
+        159 => {
+            load_oarc_if_needed(c"GetTerryCage".as_ptr());
+        },
         // Rattle
         160 => {
             load_oarc_if_needed(c"GetGaragara".as_ptr());
             load_oarc_if_needed(c"PutGaragara".as_ptr());
         },
         // Tumbleweed
-        163 => load_oarc_if_needed(c"GetSozaiC".as_ptr()),
+        163 => {
+            load_oarc_if_needed(c"GetSozaiC".as_ptr());
+        },
         // Ancient Flower
-        166 => load_oarc_if_needed(c"GetSozaiF".as_ptr()),
+        166 => {
+            load_oarc_if_needed(c"GetSozaiF".as_ptr());
+        },
         // Dusk Relic
-        168 => load_oarc_if_needed(c"GetSozaiH".as_ptr()),
+        168 => {
+            load_oarc_if_needed(c"GetSozaiH".as_ptr());
+        },
         // Monster Horn
-        171 => load_oarc_if_needed(c"GetSozaiL".as_ptr()),
+        171 => {
+            load_oarc_if_needed(c"GetSozaiL".as_ptr());
+        },
         // Blue Bird Feather
-        174 => load_oarc_if_needed(c"GetSozaiN".as_ptr()),
+        174 => {
+            load_oarc_if_needed(c"GetSozaiN".as_ptr());
+        },
         // Golden Skull
-        175 => load_oarc_if_needed(c"GetSozaiO".as_ptr()),
+        175 => {
+            load_oarc_if_needed(c"GetSozaiO".as_ptr());
+        },
         // Goddess Plume
-        176 => load_oarc_if_needed(c"GetSozaiP".as_ptr()),
+        176 => {
+            load_oarc_if_needed(c"GetSozaiP".as_ptr());
+        },
         // Tablets
-        177 => load_oarc_if_needed(c"GetSekibanMapA".as_ptr()),
-        178 => load_oarc_if_needed(c"GetSekibanMapB".as_ptr()),
-        179 => load_oarc_if_needed(c"GetSekibanMapC".as_ptr()),
+        177 => {
+            load_oarc_if_needed(c"GetSekibanMapA".as_ptr());
+        },
+        178 => {
+            load_oarc_if_needed(c"GetSekibanMapB".as_ptr());
+        },
+        179 => {
+            load_oarc_if_needed(c"GetSekibanMapC".as_ptr());
+        },
         // Stone of Trials
-        180 => load_oarc_if_needed(c"GetSirenKey".as_ptr()),
+        180 => {
+            load_oarc_if_needed(c"GetSirenKey".as_ptr());
+        },
         // Revitalizing Potion Plus Plus
-        194 => load_oarc_if_needed(c"GetBottleRepairS".as_ptr()),
+        194 => {
+            load_oarc_if_needed(c"GetBottleRepairS".as_ptr());
+        },
         // Pumpkin Soup
-        195 | 196 => load_oarc_if_needed(c"GetBottlePumpkin".as_ptr()),
+        195 | 196 => {
+            load_oarc_if_needed(c"GetBottlePumpkin".as_ptr());
+        },
         // Life Tree Seedling
-        197 => load_oarc_if_needed(c"GetSeedLife".as_ptr()),
+        197 => {
+            load_oarc_if_needed(c"GetSeedLife".as_ptr());
+        },
         // Life Tree Fruit
-        198 => load_oarc_if_needed(c"GetFruitB".as_ptr()),
+        198 => {
+            load_oarc_if_needed(c"GetFruitB".as_ptr());
+        },
         // Extra Wallet
-        199 => load_oarc_if_needed(c"GetSparePurse".as_ptr()),
+        199 => {
+            load_oarc_if_needed(c"GetSparePurse".as_ptr());
+        },
         // Tadtones
-        214 => load_oarc_if_needed(c"Onp".as_ptr()),
+        214 => {
+            load_oarc_if_needed(c"Onp".as_ptr());
+        },
         // Scrapper
-        215 => load_oarc_if_needed(c"DesertRobot".as_ptr()),
+        215 => {
+            load_oarc_if_needed(c"DesertRobot".as_ptr());
+        },
         // Groose Trap
         251 => {
             load_oarc_if_needed(c"RivalCmnAnm".as_ptr());
@@ -1700,13 +1807,15 @@ fn get_fallback_model_for_item(_item_id: u16) -> *const c_char {
     c"GetRupee".as_ptr()
 }
 
-// When true, the item actor currently being spawned comes from the Archipelago
-// memory buffer.  ensure_ap_item_oarcs_loaded() has already loaded the item's
-// OARC from disk, so both model resolution functions should succeed normally.
-// This flag is still used as a signal so they can apply fallback logic (green
-// rupee) if the OARC load unexpectedly failed (e.g. file missing from romfs).
-// Set by archipelago_check_item_buffer() around the spawn_actor() call.
+// Legacy flag — no longer drives model resolution logic but kept so
+// other code can check whether the current item originated from AP.
 static mut AP_FORCE_FALLBACK_MODEL: bool = false;
+
+// Set by hook #46 when it falls back to GetRupee brres data.
+// Checked by hook #47 to also return "GetRupee" model name.
+// Without this, a mismatch (GetRupee brres + item's real model name)
+// causes invisible items because the model name isn't in GetRupee.
+static mut AP_HOOK46_USED_FALLBACK: bool = false;
 
 #[no_mangle]
 pub extern "C" fn get_arc_model_from_item(
@@ -1715,44 +1824,21 @@ pub extern "C" fn get_arc_model_from_item(
     item_id: u16,
 ) -> *mut c_void {
     unsafe {
-        // Safety check: If arc_name is null (item has no model defined),
-        // use a fallback model based on item type. This happens with bugs/treasures.
-        if arc_name.is_null() {
-            let fallback_model = get_fallback_model_for_item(item_id);
-            return dRawArcTable_c__getDataFromOarc(
-                arc_table,
-                fallback_model,
-                c"g3d/model.brres".as_ptr(),
-            );
-        }
+        // Reset the hook-mismatch flag for this item's init cycle.
+        // It will only be set back to true if we fall all the way to
+        // the GetRupee fallback at step 4.
+        AP_HOOK46_USED_FALLBACK = false;
 
-        // For AP buffer items, the OARC was loaded at runtime by
-        // ensure_ap_item_oarcs_loaded() before spawning.  Try normal
-        // resolution — it should now succeed for ALL items.  Fall back
-        // to GetRupee only if the load unexpectedly failed.
-        if AP_FORCE_FALLBACK_MODEL {
-            let resolved = resolve_progressive_item_models(arc_name, item_id, 1);
-            if !resolved.is_null() {
-                let result = dRawArcTable_c__getDataFromOarc(
-                    arc_table,
-                    resolved,
-                    c"g3d/model.brres".as_ptr(),
-                );
-                if !result.is_null() {
-                    return result; // OARC loaded — correct model!
-                }
-            }
-            // OARC load failed (file missing?) — last-resort fallback
-            return dRawArcTable_c__getDataFromOarc(
-                arc_table,
-                c"GetRupee".as_ptr(),
-                c"g3d/model.brres".as_ptr(),
-            );
-        }
-
+        // Resolve the arc name through progressive item logic.
+        // IMPORTANT: We pass arc_name even if null.  For individual progressive
+        // tiers (e.g., id=13 Master Sword) the game's item table has oarc=null,
+        // but resolve_progressive_item_models returns the correct OARC name
+        // (e.g., "GetSwordA") via its match arms.  Null is safe — the function
+        // never dereferences the pointer, only pattern-matches item_id.
         let resolved_model_name = resolve_progressive_item_models(arc_name, item_id, 1);
 
-        // Additional safety check after resolution - use fallback
+        // If resolution returned null (no progressive match and input was null),
+        // use GetRupee — this item genuinely has no model (e.g., bugs/treasures).
         if resolved_model_name.is_null() {
             let fallback_model = get_fallback_model_for_item(item_id);
             return dRawArcTable_c__getDataFromOarc(
@@ -1762,25 +1848,63 @@ pub extern "C" fn get_arc_model_from_item(
             );
         }
 
+        // 1. Try the stage's arc table (works for ObjectPack-native items and items
+        //    whose OARCs were added via ARCN patches).
         let result = dRawArcTable_c__getDataFromOarc(
             arc_table,
             resolved_model_name,
             c"g3d/model.brres".as_ptr(),
         );
-
-        // If the OARC is not loaded in the current stage, fall back to an
-        // ObjectPack model so the item actor still initialises.  The item_id
-        // in param1 still determines what the player actually receives.
-        if result.is_null() {
-            let fallback_model = get_fallback_model_for_item(item_id);
-            return dRawArcTable_c__getDataFromOarc(
-                arc_table,
-                fallback_model,
-                c"g3d/model.brres".as_ptr(),
-            );
+        if !result.is_null() {
+            return result;
         }
 
-        return result;
+        // 2. Stage table didn't have it — try loading the OARC from Object/NX into the
+        //    stage table on-demand, then retry.
+        if !WORK2_HEAP.is_null() {
+            let stage_table = arc_table as *mut mem::ArcEntryTable;
+            dRawArcTable_c__getArcOrLoadFromDisk(
+                stage_table,
+                resolved_model_name,
+                c"Object/NX".as_ptr(),
+                WORK2_HEAP,
+            );
+
+            let result2 = dRawArcTable_c__getDataFromOarc(
+                arc_table,
+                resolved_model_name,
+                c"g3d/model.brres".as_ptr(),
+            );
+            if !result2.is_null() {
+                return result2;
+            }
+        }
+
+        // 3. ARC_MGR fallback — OARCs pre-loaded at stage entry may be in the global
+        //    table even if the stage table didn't pick them up.
+        if !ARC_MGR.is_null() {
+            let arc_mgr_table =
+                &mut (*ARC_MGR).entries_table as *mut mem::ArcEntryTable as *mut c_void;
+            let result3 = dRawArcTable_c__getDataFromOarc(
+                arc_mgr_table,
+                resolved_model_name,
+                c"g3d/model.brres".as_ptr(),
+            );
+            if !result3.is_null() {
+                return result3;
+            }
+        }
+
+        // 4. GetRupee fallback — the actor still initialises with a rupee model. Set
+        //    the mismatch flag so hook #47 also returns "GetRupee" model name,
+        //    preventing invisible items.
+        AP_HOOK46_USED_FALLBACK = true;
+        let fallback_model = get_fallback_model_for_item(item_id);
+        return dRawArcTable_c__getDataFromOarc(
+            arc_table,
+            fallback_model,
+            c"g3d/model.brres".as_ptr(),
+        );
     }
 }
 
@@ -1790,43 +1914,34 @@ pub extern "C" fn get_item_model_name_ptr(
     item_id: u16,
 ) -> *const c_char {
     unsafe {
-        // Safety check: If model_name is null (item has no model defined),
-        // use fallback model name. This happens with bugs/treasures.
-        if model_name.is_null() {
+        // If hook #46 fell back to GetRupee brres data, the model name MUST
+        // also be "GetRupee" — otherwise the game tries to find e.g.
+        // "GetSwordA" inside GetRupee's brres, which fails silently and
+        // the item actor becomes invisible.
+        if AP_HOOK46_USED_FALLBACK {
+            AP_HOOK46_USED_FALLBACK = false;
+
             // Replaced code still needs to execute
             asm!("mov x1, {0:x}", in(reg) item_id);
             asm!("cmp x1, #0x1C");
-            return get_fallback_model_for_item(item_id);
-        }
 
-        // For AP buffer items, the OARC was loaded at runtime.  Try
-        // returning the correct model name so animations and textures
-        // match the actual item.  Fall back to GetRupee only if the
-        // resolved name would reference an unloaded archive.
-        if AP_FORCE_FALLBACK_MODEL {
-            let resolved = resolve_progressive_item_models(model_name, item_id, 2);
-            // Verify the resolved OARC is actually loaded before returning
-            // its name.  get_arc_model_from_item uses arc_or_model=1 which
-            // gives archive names, but here (arc_or_model=2) gives model
-            // names which may differ.  Safest: try getDataFromOarc with
-            // the resolved name — if it finds data, the OARC is loaded.
-            if !resolved.is_null() {
-                // Replaced code still needs to execute
-                asm!("mov x1, {0:x}", in(reg) item_id);
-                asm!("cmp x1, #0x1C");
-                return resolved;
-            }
-            // Fallback if resolution returned null
-            asm!("mov x1, {0:x}", in(reg) item_id);
-            asm!("cmp x1, #0x1C");
             return c"GetRupee".as_ptr();
         }
 
+        // Resolve progressive model names.  We pass model_name even if null —
+        // for individual progressive tiers (e.g., id=13 Master Sword) the game's
+        // item table has model=null, but resolve_progressive_item_models returns
+        // the correct model name (e.g., "GetSwordA") via its match arms.
         let resolved_model_name = resolve_progressive_item_models(model_name, item_id, 2);
 
-        // Replaced code
+        // Replaced code still needs to execute
         asm!("mov x1, {0:x}", in(reg) item_id);
         asm!("cmp x1, #0x1C");
+
+        // If still null after resolution, use fallback.
+        if resolved_model_name.is_null() {
+            return get_fallback_model_for_item(item_id);
+        }
 
         return resolved_model_name;
     }
@@ -2189,9 +2304,61 @@ fn player_is_busy() -> bool {
     }
 }
 
+// ── Stage-transition cooldown ──────────────────────────────────────────
+//
+// When the game loads a new stage, there is a window (several hundred
+// milliseconds) during which the room/actor/heap infrastructure is not
+// fully initialised.  If we try to spawn an item actor during that
+// window the spawn silently fails or produces a broken actor — the
+// buffer slot gets consumed but the player never sees the item.
+//
+// We detect stage changes by comparing CURRENT_STAGE_NAME to a cached
+// copy and impose a cooldown of STAGE_COOLDOWN_FRAMES (~1–2 s at
+// 30/60 fps) before processing any buffer items.  This gives the
+// engine enough time to finish loading rooms, OARCs and heaps.
+
+/// Frames to wait after a stage transition before delivering items.
+const STAGE_COOLDOWN_FRAMES: u32 = 90;
+
+/// Maximum frames a single buffer slot will be retried before giving up
+/// and clearing it (the Python direct-flag fallback ensures inventory
+/// correctness regardless).
+const MAX_RETRY_FRAMES: u32 = 300;
+
+static mut AP_LAST_STAGE: [u8; 8] = [0u8; 8];
+static mut AP_STAGE_COOLDOWN: u32 = 0;
+
+/// Per-slot retry counters — one for each buffer slot (excluding slot 0
+/// which holds the magic signature).
+static mut AP_SLOT_RETRIES: [u32; ARCHIPELAGO_BUFFER_SIZE] = [0u32; ARCHIPELAGO_BUFFER_SIZE];
+
+/// Returns true if we are still in the post-stage-transition cooldown
+/// and should NOT process buffer items this frame.
+#[inline]
+fn ap_stage_cooldown_active() -> bool {
+    unsafe {
+        // Detect stage change.
+        let cur = core::ptr::read_volatile(core::ptr::addr_of!(CURRENT_STAGE_NAME));
+        if cur != AP_LAST_STAGE {
+            AP_LAST_STAGE = cur;
+            AP_STAGE_COOLDOWN = STAGE_COOLDOWN_FRAMES;
+        }
+        if AP_STAGE_COOLDOWN > 0 {
+            AP_STAGE_COOLDOWN -= 1;
+            return true;
+        }
+        false
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn archipelago_check_item_buffer() {
     unsafe {
+        // Wait for the stage to finish loading before we attempt any spawns.
+        if ap_stage_cooldown_active() {
+            return;
+        }
+
         // Check each slot in the buffer
         // Skip slot 0 which contains the magic signature
         for i in 1..ARCHIPELAGO_BUFFER_SIZE {
@@ -2212,68 +2379,52 @@ pub extern "C" fn archipelago_check_item_buffer() {
                 return;
             }
 
-            // Item found — give it to the player.
-            //
-            // Design notes:
-            //
-            // 1. We DO NOT call dAcItem__determineFinalItemid(). The Python client already
-            //    resolves progressive items to their concrete tier (e.g. "Progressive Bow
-            //    #2" → Iron Bow with game ID 90).  The vanilla determineFinalItemid may
-            //    reject or transform the ID based on inventory state that does not match
-            //    the multiworld's logic, returning 0 for items it considers invalid —
-            //    which silently makes the item actor spawn as "nothing" and the player
-            //    never receives their item.
-            //
-            // 2. We use param1 flag 0x180000 (bits 19+20, bit 22 clear) instead of
-            //    give_item_with_sceneflag's 0x580000 (bit 22 set).  Bit 22 makes the item
-            //    actor *freestanding* (waits for physical pickup), while 0x180000 is
-            //    *event-triggered* and immediately enters the "Link holds up item"
-            //    sequence. This matches give_item_with_archipelago_flag().
-            //
-            // 3. We spawn the item at the player's position rather than null (origin) to
-            //    ensure the actor is in a valid location within the current room.
-
-            // Safety: skip if PLAYER_PTR is null (shouldn't happen if
-            // player_is_busy() passed, but guard anyway).
+            // Safety: skip if PLAYER_PTR is null.
             if PLAYER_PTR.is_null() {
                 return;
             }
 
+            // Resolve progressive items (e.g., Progressive Bow → Iron Bow)
+            // to their concrete tier based on the player's current inventory
+            // so the correct OARC model is loaded and the right item actor
+            // is spawned.
+            let item_id = item_id_val as u64;
+            let final_id = dAcItem__determineFinalItemid(item_id) as u16;
+
             NUMBER_OF_ITEMS = 0;
             ITEM_GET_BOTTLE_POUCH_SLOT = 0xFFFFFFFF;
 
-            // Use item ID directly — no determineFinalItemid (see note 1).
-            let item_id = item_id_val as u32;
+            // Use the resolved item ID for spawning so the game's item
+            // table can look up the correct OARC and model.
+            let spawn_id = if final_id > 0 {
+                final_id as u32
+            } else {
+                item_id_val as u32
+            };
+            let param1: u32 = spawn_id | (0xFFu32 << 10) | 0x580000;
 
-            // 0x180000 = event-triggered item (immediate collection).
-            // 0xFF << 10 = sceneflag 0xFF → "no sceneflag to set".
-            let param1: u32 = item_id | (0xFFu32 << 10) | 0x180000;
-
-            // Spawn at player position (note 3).
-            let mut pos = (*PLAYER_PTR).obj_base_members.base.pos;
-            let pos_ptr = &mut pos as *mut math::Vec3f;
-
-            // Load the item's OARC at runtime if it's not already available.
-            // This replaces the old AP_FORCE_FALLBACK_MODEL approach that forced
-            // a green rupee model for all non-ObjectPack items.
+            // Pre-load the item's OARCs into ARC_MGR's global table.
+            // The on-demand loader in get_arc_model_from_item (hook #46)
+            // will load into the stage's own table when the model is first
+            // queried during dAcItem::init.
             //
-            // dRawArcTable_c__getArcOrLoadFromDisk reads the .arc.LZ file from
-            // romfs/Object/NX (all item OARCs are placed there by the rando
-            // build).  The prefer_modreplace_for_general_arcs hook inside
-            // getArcOrLoadFromDisk also checks ModReplace automatically.
-            ensure_ap_item_oarcs_loaded(item_id as u16);
+            // Load with BOTH the original base id (for progressive item
+            // match arms) AND the resolved spawn_id (for individual tier
+            // match arms, e.g., item 13 Master Sword → falls to sword arm).
+            ensure_ap_item_oarcs_loaded(item_id_val as u16);
+            if spawn_id as u16 != item_id_val as u16 {
+                ensure_ap_item_oarcs_loaded(spawn_id as u16);
+            }
 
-            // Tell model resolution we're in an AP context.  This is still
-            // used as a signal so get_arc_model_from_item and
-            // get_item_model_name_ptr know to apply fallback logic if the
-            // OARC load happened to fail (e.g. file missing from disk).
             AP_FORCE_FALLBACK_MODEL = true;
+
+            let player_pos_ptr = core::ptr::addr_of_mut!((*PLAYER_PTR).obj_base_members.base.pos);
 
             let item_actor: *mut dAcItem = actor::spawn_actor(
                 actor::ACTORID::ITEM,
                 (*ROOM_MGR).roomid.into(),
                 param1,
-                pos_ptr,
+                player_pos_ptr,
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
                 0xFFFFFFFF,
@@ -2284,26 +2435,128 @@ pub extern "C" fn archipelago_check_item_buffer() {
             ITEM_GET_BOTTLE_POUCH_SLOT = 0xFFFFFFFF;
             NUMBER_OF_ITEMS = 0;
 
-            // Force textbox for AP-delivered items.  check_and_modify_item_actor
-            // suppresses textboxes for common items (rupees, hearts, etc.) but for
-            // AP items the player needs to see what the multiworld sent them.
-            // We override param1 AFTER init so check_and_modify_item_actor (which
-            // runs during boot for ALL items) stays completely untouched.
             if !item_actor.is_null() {
+                // Clear bit 9 to allow textbox display for AP items.
                 (*item_actor).base.basebase.members.param1 &= !0x200u32;
-            }
+                (*item_actor).prevent_timed_despawn = 1;
+                (*item_actor).no_longer_waiting = 1;
 
-            // Clear the slot after processing using volatile writes — even on
-            // null actor result.  The Python client provides a direct
-            // item-flag-write fallback that guarantees the item reaches the
-            // player's inventory regardless of whether the actor spawned.
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*slot_ptr).item_id), 0u8);
-            core::ptr::write_volatile(core::ptr::addr_of_mut!((*slot_ptr).flags), 0u8);
-            (*slot_ptr)._reserved = [0, 0];
+                // Spawn succeeded — clear the buffer slot and reset retries.
+                core::ptr::write_volatile(core::ptr::addr_of_mut!((*slot_ptr).item_id), 0u8);
+                core::ptr::write_volatile(core::ptr::addr_of_mut!((*slot_ptr).flags), 0u8);
+                (*slot_ptr)._reserved = [0, 0];
+                AP_SLOT_RETRIES[i] = 0;
+            } else {
+                // Spawn returned null — increment retry counter.
+                // If we've retried too many times, give up and clear the
+                // slot.  The Python client's DirectFlags fallback will
+                // ensure the item is not lost (it writes save-file flags
+                // after its own timeout).
+                AP_SLOT_RETRIES[i] += 1;
+                if AP_SLOT_RETRIES[i] >= MAX_RETRY_FRAMES {
+                    core::ptr::write_volatile(core::ptr::addr_of_mut!((*slot_ptr).item_id), 0u8);
+                    core::ptr::write_volatile(core::ptr::addr_of_mut!((*slot_ptr).flags), 0u8);
+                    (*slot_ptr)._reserved = [0, 0];
+                    AP_SLOT_RETRIES[i] = 0;
+                }
+            }
 
             // Only process one item per frame to avoid overwhelming the game
             break;
         }
+    }
+}
+
+/// Set dungeon-specific flags for boss keys, small keys, and maps.
+/// Replicates the dungeon item logic from handle_custom_item_get() so
+/// that AP-delivered dungeon items update both local and global dungeon
+/// flags immediately, without needing the item actor's stateGet flow.
+unsafe fn ap_set_dungeon_item_flags(itemid: u16) {
+    const BK_TO_FLAGINDEX: [usize; 7] = [
+        12,  // AC BK - item id 25
+        15,  // FS BK - item id 26
+        18,  // SSH BK - item id 27
+        255, // unused (item id 28 = Key Piece, not a boss key)
+        11,  // SVT BK - item id 29
+        14,  // ET BK - item id 30
+        17,  // LMF BK - item id 31
+    ];
+
+    const SK_TO_FLAGINDEX: [usize; 7] = [
+        11, // SVT SK - item id 200
+        17, // LMF SK - item id 201
+        12, // AC SK - item id 202
+        15, // FS SK - item id 203
+        18, // SSH SK - item id 204
+        20, // SK SK - item id 205
+        9,  // Caves SK - item id 206
+    ];
+
+    const MAP_TO_FLAGINDEX: [usize; 7] = [
+        11, // SVT MAP - item id 207
+        14, // ET MAP - item id 208
+        17, // LMF MAP - item id 209
+        12, // AC MAP - item id 210
+        15, // FS MAP - item id 211
+        18, // SSH MAP - item id 212
+        20, // SK MAP - item id 213
+    ];
+
+    let mut dungeon_item_mask: u16 = 0;
+
+    if (itemid >= 25 && itemid <= 27) || (itemid >= 29 && itemid <= 31) {
+        dungeon_item_mask = 0x80; // boss keys
+    }
+    if dungeon_item_mask == 0 && itemid >= 200 && itemid <= 206 {
+        dungeon_item_mask = 0x0F; // small keys
+    }
+    if dungeon_item_mask == 0 && itemid >= 207 && itemid <= 213 {
+        dungeon_item_mask = 0x02; // maps
+    }
+
+    if dungeon_item_mask == 0 {
+        return; // Not a dungeon item
+    }
+
+    let current_scene_index = (*DUNGEONFLAG_MGR).sceneindex as usize;
+    let dungeon_item_scene_index: usize;
+
+    if dungeon_item_mask == 0x80 {
+        dungeon_item_scene_index = BK_TO_FLAGINDEX[(itemid - 25) as usize];
+    } else if dungeon_item_mask == 0x0F {
+        dungeon_item_scene_index = SK_TO_FLAGINDEX[(itemid - 200) as usize];
+    } else {
+        dungeon_item_scene_index = MAP_TO_FLAGINDEX[(itemid - 207) as usize];
+    }
+
+    if dungeon_item_scene_index == 0xFF {
+        return; // Invalid index (e.g., Key Piece at id 28)
+    }
+
+    // Set the local flag if the player is in the dungeon right now.
+    if current_scene_index == dungeon_item_scene_index {
+        if dungeon_item_mask != 0x0F {
+            STATIC_DUNGEONFLAGS[0] |= dungeon_item_mask;
+        } else {
+            let mut current_key_count = STATIC_DUNGEONFLAGS[1] & 0xF;
+            let mut obtained_key_count = (STATIC_DUNGEONFLAGS[1] >> 4) & 0xF;
+            current_key_count += 1;
+            obtained_key_count += 1;
+            STATIC_DUNGEONFLAGS[1] = (obtained_key_count << 4) | current_key_count;
+        }
+    }
+
+    // Always set the global (save file) flag.
+    if dungeon_item_mask != 0x0F {
+        (*FILE_MGR).FA.dungeonflags[dungeon_item_scene_index][0] |= dungeon_item_mask;
+    } else {
+        let mut current_key_count = (*FILE_MGR).FA.dungeonflags[dungeon_item_scene_index][1] & 0xF;
+        let mut obtained_key_count =
+            ((*FILE_MGR).FA.dungeonflags[dungeon_item_scene_index][1] >> 4) & 0xF;
+        current_key_count += 1;
+        obtained_key_count += 1;
+        (*FILE_MGR).FA.dungeonflags[dungeon_item_scene_index][1] =
+            (obtained_key_count << 4) | current_key_count;
     }
 }
 

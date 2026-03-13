@@ -482,6 +482,16 @@ pub extern "C" fn check_global_dungeonflag(sceneindex: u16, flag: u16) -> u16 {
 }
 
 // Itemflags
+
+/// Set an itemflag by raw numeric ID (bypasses the ITEMFLAGS enum).
+/// Used by the Archipelago buffer handler which receives item IDs as
+/// plain integers from the Python client.
+pub fn set_itemflag_raw(flag_id: u16) {
+    unsafe {
+        ((*(*ITEMFLAG_MGR).funcs).set_flag)(ITEMFLAG_MGR, flag_id);
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn set_itemflag(flag: ITEMFLAGS) {
     unsafe {

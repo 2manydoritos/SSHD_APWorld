@@ -15,13 +15,17 @@ mov w8, #400 ; upped from 200
 ; all of the rooms in Sandship. Which means the extra entry needed to load the bzs.arc
 ; that rando adds isn't there and the game crashes trying to find an arc which doesn't exist.
 ; 
-; In theory, only one extra entry needs to be added
-; but even numbers are nice and safety is even nicer.
+; Increased to 128 entries to accommodate AP runtime OARC loading.
+; The vanilla game uses ~18 entries for Sandship (the largest stage).
+; When Archipelago delivers items via the memory buffer, the on-demand
+; loader in get_arc_model_from_item (hook #46) needs to add item OARCs
+; to the stage table at runtime.  With only 20 entries the table is
+; full and on-demand loading silently fails.
 .offset 0x7100e3b2ac
-mov w1, #0x6e8 ; ArcEntry[20] -> 0x58 * 20 = 0x6e0, + 0x8 for some pointer ArcEntryTable
+mov w1, #0x2C08 ; ArcEntry[128] -> 0x58 * 128 = 0x2C00, + 0x8 for some pointer ArcEntryTable
 
 .offset 0x7100e3b2bc
-mov w8, #20 ; upped from 18
+mov w8, #128 ; upped from 18
 
 
 ; hopefully fix memory leak by checking if filename already has an arcEntry

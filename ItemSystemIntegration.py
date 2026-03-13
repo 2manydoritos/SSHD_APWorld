@@ -104,7 +104,7 @@ class GameItemSystem:
         self.memory = memory_accessor
         self.base_address = getattr(memory_accessor, 'base_address', None)
         self.buffer_addr = None  # Will be found dynamically
-        self.timeout_frames = 300  # 5 seconds at 60 FPS
+        self.timeout_frames = 900  # 15 seconds at 60 FPS polling rate — must cover Rust stage-transition cooldown (90 game frames) + retry window (300 game frames)
         
         # Buffer address cycling: store ALL valid candidate addresses
         self._candidate_buffer_addrs: list = []  # All prescan hits with valid magic
@@ -366,31 +366,46 @@ class GameItemSystem:
             
             if self.buffer_addr is None:
                 logger.debug("Buffer address not found — skipping buffer path")
-            elif not self._is_player_ready():
-                logger.debug("Player not ready — skipping buffer path")
             else:
-                slot = self._find_empty_buffer_slot()
-                if slot is None:
-                    logger.debug("Item buffer full — skipping buffer path")
+                # Wait for the player to be ready (not in a busy action).
+                # Instead of immediately falling back to direct-flag-write when
+                # the player is busy, we retry for up to ~10 seconds.  This
+                # ensures the player sees the item-get animation and textbox
+                # for every AP item instead of having it silently added to
+                # inventory.
+                import time as _time
+                _BUSY_WAIT_MAX = 600  # ~10 s at 60 FPS polling rate
+                _busy_waited = 0
+                while not self._is_player_ready():
+                    _busy_waited += 1
+                    if _busy_waited >= _BUSY_WAIT_MAX:
+                        logger.info("Player busy timeout — falling back to direct flag write")
+                        break
+                    _time.sleep(1 / 60)
                 else:
-                    # Prepare flags
-                    flags = 0
-                    if show_animation:
-                        flags |= 0x01
-                    if play_jingle:
-                        flags |= 0x02
-                    
-                    # Write to buffer ATOMICALLY using a single 16-bit write.
-                    buffer_offset = self.buffer_addr + (slot * GameOffsets.ARCHIPELAGO_BUFFER_SLOT_SIZE)
-                    slot_value = item_id | (flags << 8)  # little-endian: [item_id, flags]
-                    if self.memory.write_short(buffer_offset, slot_value):
-                        logger.info(f"Wrote item {item_id} to buffer slot {slot} with flags {flags:02x}")
-                        logger.info(f"Buffer address: base+0x{self.buffer_addr:x} = 0x{self.memory.base_address + self.buffer_addr:x}")
-                        buffer_success = self._wait_for_item_processed(
-                            buffer_offset, expected_item_id=item_id
-                        )
+                    # Player is ready — proceed with buffer write
+                    slot = self._find_empty_buffer_slot()
+                    if slot is None:
+                        logger.debug("Item buffer full — skipping buffer path")
                     else:
-                        logger.warning(f"Failed to write item {item_id} to buffer slot {slot}")
+                        # Prepare flags
+                        flags = 0
+                        if show_animation:
+                            flags |= 0x01
+                        if play_jingle:
+                            flags |= 0x02
+                        
+                        # Write to buffer ATOMICALLY using a single 16-bit write.
+                        buffer_offset = self.buffer_addr + (slot * GameOffsets.ARCHIPELAGO_BUFFER_SLOT_SIZE)
+                        slot_value = item_id | (flags << 8)  # little-endian: [item_id, flags]
+                        if self.memory.write_short(buffer_offset, slot_value):
+                            logger.info(f"Wrote item {item_id} to buffer slot {slot} with flags {flags:02x}")
+                            logger.info(f"Buffer address: base+0x{self.buffer_addr:x} = 0x{self.memory.base_address + self.buffer_addr:x}")
+                            buffer_success = self._wait_for_item_processed(
+                                buffer_offset, expected_item_id=item_id
+                            )
+                        else:
+                            logger.warning(f"Failed to write item {item_id} to buffer slot {slot}")
         except Exception as exc:
             logger.warning(f"Buffer delivery error for item {item_id}: {exc}")
         
