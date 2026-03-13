@@ -423,6 +423,7 @@ class RyujinxMemoryReader:
         "AP_ITEM_INFO_TABLE": bytes([0x49, 0x54, 0x00, 0x01]),  # "IT\x00\x01"
         "AP_CHECK_STATS":     bytes([0x43, 0x53, 0x00, 0x01]),  # "CS\x00\x01"
         "AP_ITEM_BUFFER":     bytes([0x41, 0x50, 0x00, 0x01]),  # "AP\x00\x01"
+        "AP_DEBUG_SLOTS":    bytes([0x01, 0x00, 0x53, 0x44]),  # 0x44530001 LE
     }
 
     # --- Connection health thresholds ---
@@ -1266,6 +1267,8 @@ class SSHDContext(CommonContext):
         self.ap_location_codes: Set[int] = set()  # Location codes that have cross-world items
         self._ap_item_info_offset: Optional[int] = None  # Memory offset of AP_ITEM_INFO_TABLE
         self._ap_check_stats_offset: Optional[int] = None  # Memory offset of AP_CHECK_STATS
+        self._ap_debug_slots_offset: Optional[int] = None  # Memory offset of AP_DEBUG_SLOTS
+        self._ap_debug_last_seq: int = 0                       # Last seen sequence number
         self._ap_item_info_written: bool = False  # Whether we've written the info table
         
         # Tracker bridge for autotracking
@@ -1541,6 +1544,7 @@ class SSHDContext(CommonContext):
                 self._ap_item_info_written = False
                 self._ap_item_info_offset = None
                 self._ap_check_stats_offset = None
+                self._ap_debug_slots_offset = None
                 # Eagerly attempt to write the table right now if memory is
                 # already connected.  This reduces the window during which a
                 # player can check a location before the table is populated.
@@ -1917,6 +1921,7 @@ class SSHDContext(CommonContext):
                     # the next successful base-address scan.
                     self._ap_item_info_offset = None
                     self._ap_check_stats_offset = None
+                    self._ap_debug_slots_offset = None
                     self._ap_item_info_written = False
                     self.beetle_patch_applied = False
                     self.memory.invalidate_base()
@@ -1979,6 +1984,9 @@ class SSHDContext(CommonContext):
             if stage_name != self.current_stage:
                 logger.debug(f"Entered stage: {stage_name}")
                 self.current_stage = stage_name
+            
+            # Poll Rust debug slots (prints to client console)
+            self._poll_debug_slots()
             
             # Write AP buffers to game memory (item info table + check stats)
             self._write_ap_item_info_table()
@@ -2635,6 +2643,55 @@ class SSHDContext(CommonContext):
             
         except Exception as e:
             logger.warning(f"Failed to write AP item info table: {e}")
+
+    # ------------------------------------------------------------------
+    # Debug ring-buffer reader (Rust -> Python via shared memory)
+    # ------------------------------------------------------------------
+    # Layout matches AP_DEBUG_SLOTS in item.rs:
+    #   10 × u32 = 40 bytes, little-endian
+    #   [0] magic 0x44530001   [1] seq   [2] item_id   [3] step (1-4)
+    #   [4] flags              [5] fb_cnt [6] oarc_ok   [7..9] reserved
+    _DBG_SLOT_COUNT = 10
+    _DBG_SLOT_BYTES = _DBG_SLOT_COUNT * 4  # 40 bytes
+
+    _STEP_NAMES = {1: "stage_table", 2: "loaded_from_disk", 3: "ARC_MGR", 4: "FALLBACK"}
+
+    def _poll_debug_slots(self):
+        """Read debug slot values from the Rust static and log changes."""
+        if self._ap_debug_slots_offset is None:
+            self._ap_debug_slots_offset = self._scan_for_buffer(
+                bytes([0x01, 0x00, 0x53, 0x44]), "AP_DEBUG_SLOTS"
+            )
+        if self._ap_debug_slots_offset is None:
+            return
+
+        try:
+            raw = self.memory.read_bytes(
+                self._ap_debug_slots_offset, self._DBG_SLOT_BYTES
+            )
+            if raw is None or len(raw) < self._DBG_SLOT_BYTES:
+                return
+
+            # Parse 10 × u32 LE
+            slots = [int.from_bytes(raw[i:i+4], "little") for i in range(0, self._DBG_SLOT_BYTES, 4)]
+            seq = slots[1]
+
+            # Only log when the sequence number changes
+            if seq == self._ap_debug_last_seq:
+                return
+            self._ap_debug_last_seq = seq
+
+            item_id = slots[2]
+            step = slots[3]
+            flags = slots[4]
+            fb_cnt = slots[5]
+            step_name = self._STEP_NAMES.get(step, f"unknown({step})")
+
+            msg = f"[GAME-DBG] H46 seq={seq} item={item_id} step={step_name} flags=0x{flags:X} fallbacks={fb_cnt}"
+            logger.info(msg)
+
+        except Exception:
+            pass  # Silently ignore transient read failures
 
     def _update_ap_check_stats(self):
         """

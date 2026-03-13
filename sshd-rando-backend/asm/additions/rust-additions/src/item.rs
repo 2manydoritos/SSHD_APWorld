@@ -3,7 +3,6 @@
 #![allow(unused)]
 
 use crate::actor;
-use crate::debug;
 use crate::event;
 use crate::fix;
 use crate::flag;
@@ -161,6 +160,36 @@ extern "C" {
 
     static ARC_MGR: *mut mem::ArcMgr;
     static WORK2_HEAP: *mut mem::Heap;
+}
+
+// ============================================================================
+// Lightweight debug slots (readable by Python client via pymem)
+// ============================================================================
+// Tiny array of u32 values the Python client polls.  No string formatting,
+// no memset/memcpy — just volatile u32 writes.  This avoids the binary-size
+// increase that the former ring-buffer approach caused, which triggered
+// nnrtld/Ryujinx symbol-resolution conflicts.
+//
+// Layout: 10 × u32 = 40 bytes
+//   [0] magic   0x44530001 ("DS\x00\x01")
+//   [1] seq     write sequence (incremented each hook-46 call)
+//   [2] item_id last item_id passed to hook 46
+//   [3] step    which resolution step succeeded (1-4, 4=fallback)
+//   [4] flags   bit 0 = resolved was null, bit 1 = fallback used
+//   [5] fb_cnt  running count of fallbacks
+//   [6] oarc_ok last ensure_ap_item_oarcs result (1=loaded, 0=skipped)
+//   [7..9]      reserved
+
+#[no_mangle]
+pub static mut AP_DEBUG_SLOTS: [u32; 10] = [
+    0x44530001, // magic
+    0, 0, 0, 0, 0, 0, 0, 0, 0,
+];
+
+/// Write a single debug slot (volatile).
+#[inline(always)]
+unsafe fn dbg_slot(index: usize, value: u32) {
+    core::ptr::write_volatile(AP_DEBUG_SLOTS.as_mut_ptr().add(index), value);
 }
 
 // IMPORTANT: when adding functions here that need to get called from the game,
@@ -1829,6 +1858,13 @@ pub extern "C" fn get_arc_model_from_item(
         // the GetRupee fallback at step 4.
         AP_HOOK46_USED_FALLBACK = false;
 
+        // Debug slots: record call
+        let seq = core::ptr::read_volatile(AP_DEBUG_SLOTS.as_ptr().add(1));
+        dbg_slot(1, seq.wrapping_add(1));
+        dbg_slot(2, item_id as u32);
+        dbg_slot(3, 0); // step not yet determined
+        dbg_slot(4, 0); // flags reset
+
         // Resolve the arc name through progressive item logic.
         // IMPORTANT: We pass arc_name even if null.  For individual progressive
         // tiers (e.g., id=13 Master Sword) the game's item table has oarc=null,
@@ -1840,6 +1876,10 @@ pub extern "C" fn get_arc_model_from_item(
         // If resolution returned null (no progressive match and input was null),
         // use GetRupee — this item genuinely has no model (e.g., bugs/treasures).
         if resolved_model_name.is_null() {
+            dbg_slot(3, 4); // step 4 = fallback
+            dbg_slot(4, 0x3); // flags: resolved_null | fallback
+            let fb = core::ptr::read_volatile(AP_DEBUG_SLOTS.as_ptr().add(5));
+            dbg_slot(5, fb.wrapping_add(1));
             let fallback_model = get_fallback_model_for_item(item_id);
             return dRawArcTable_c__getDataFromOarc(
                 arc_table,
@@ -1856,6 +1896,7 @@ pub extern "C" fn get_arc_model_from_item(
             c"g3d/model.brres".as_ptr(),
         );
         if !result.is_null() {
+            dbg_slot(3, 1); // step 1 = stage table hit
             return result;
         }
 
@@ -1876,6 +1917,7 @@ pub extern "C" fn get_arc_model_from_item(
                 c"g3d/model.brres".as_ptr(),
             );
             if !result2.is_null() {
+                dbg_slot(3, 2); // step 2 = loaded from disk
                 return result2;
             }
         }
@@ -1891,6 +1933,7 @@ pub extern "C" fn get_arc_model_from_item(
                 c"g3d/model.brres".as_ptr(),
             );
             if !result3.is_null() {
+                dbg_slot(3, 3); // step 3 = ARC_MGR hit
                 return result3;
             }
         }
@@ -1898,6 +1941,10 @@ pub extern "C" fn get_arc_model_from_item(
         // 4. GetRupee fallback — the actor still initialises with a rupee model. Set
         //    the mismatch flag so hook #47 also returns "GetRupee" model name,
         //    preventing invisible items.
+        dbg_slot(3, 4); // step 4 = fallback
+        dbg_slot(4, 0x2); // flags: fallback (resolved was not null)
+        let fb = core::ptr::read_volatile(AP_DEBUG_SLOTS.as_ptr().add(5));
+        dbg_slot(5, fb.wrapping_add(1));
         AP_HOOK46_USED_FALLBACK = true;
         let fallback_model = get_fallback_model_for_item(item_id);
         return dRawArcTable_c__getDataFromOarc(
