@@ -53,6 +53,7 @@ scan_for_flags.py
 check_tpl_formats.py
 convert_png_to_tpl.py
 compare_files.py
+extract_sword_models.py
 
 # Rando stuff
 Skyward Sword HD Randomizer/

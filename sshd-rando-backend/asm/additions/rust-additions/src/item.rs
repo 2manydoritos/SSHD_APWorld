@@ -150,47 +150,6 @@ extern "C" {
         model_name: *const c_char,
         model_path: *const c_char,
     ) -> *mut c_void;
-    fn dRawArcTable_c__getArcOrLoadFromDisk(
-        arc_table: *mut mem::ArcEntryTable,
-        arc_name: *const c_char,
-        parent_dir_name: *const c_char,
-        heap: *mut mem::Heap,
-    ) -> bool;
-    fn strcmp(s1: *const c_char, s2: *const c_char) -> i32;
-
-    static ARC_MGR: *mut mem::ArcMgr;
-    static WORK2_HEAP: *mut mem::Heap;
-}
-
-// ============================================================================
-// Lightweight debug slots (readable by Python client via pymem)
-// ============================================================================
-// Tiny array of u32 values the Python client polls.  No string formatting,
-// no memset/memcpy — just volatile u32 writes.  This avoids the binary-size
-// increase that the former ring-buffer approach caused, which triggered
-// nnrtld/Ryujinx symbol-resolution conflicts.
-//
-// Layout: 10 × u32 = 40 bytes
-//   [0]  magic   0x44530001 ("DS\x00\x01", v1)
-//   [1]  seq     write sequence (incremented each hook-46 call)
-//   [2]  item_id last item_id passed to hook 46
-//   [3]  step    which resolution step succeeded (1-4, 4=fallback)
-//   [4]  flags   bit 0 = resolved was null, bit 1 = fallback used
-//   [5]  fb_cnt  running count of fallbacks
-//   [6]  arc_tbl_lo  low 32 bits of arc_table ptr (game's table, hook46)
-//   [7]  stg_ent_lo  low 32 bits of &STAGE_ARC_MGR.entries_table
-//   [8..9]           reserved
-
-#[no_mangle]
-pub static mut AP_DEBUG_SLOTS: [u32; 10] = [
-    0x44530001, // magic v1
-    0, 0, 0, 0, 0, 0, 0, 0, 0,
-];
-
-/// Write a single debug slot (volatile).
-#[inline(always)]
-unsafe fn dbg_slot(index: usize, value: u32) {
-    core::ptr::write_volatile(AP_DEBUG_SLOTS.as_mut_ptr().add(index), value);
 }
 
 // IMPORTANT: when adding functions here that need to get called from the game,
@@ -1471,354 +1430,6 @@ pub extern "C" fn resolve_progressive_item_models(
     }
 }
 
-// ============================================================================
-// Runtime OARC loading for Archipelago items
-// ============================================================================
-//
-// When AP delivers an item via the memory buffer, the player can be in ANY
-// stage.  The item's OARC (Object ARChive containing its 3D model) may not
-// be loaded because it's stage-specific.
-//
-// Esme's solution: call dRawArcTable_c__getArcOrLoadFromDisk() at runtime to
-// load the OARC from romfs/Object/NX before spawning the item actor.  The
-// rando build already places all item OARCs into Object/NX, so they're
-// available on disk.  The game has the prefer_modreplace_for_general_arcs
-// hook that also checks ModReplace automatically.
-//
-// Items with oarc=null in items.yaml are already in ObjectPack (globally
-// loaded) and don't need this — they just work.
-
-/// Check if an OARC is already loaded in the ARC_MGR table.
-unsafe fn is_oarc_loaded(oarc_name: *const c_char) -> bool {
-    if ARC_MGR.is_null() {
-        return false;
-    }
-    let entries_ptr = (*ARC_MGR).entries_table.entries;
-    if entries_ptr.is_null() {
-        return false;
-    }
-    let entries = &*entries_ptr;
-    for entry in entries.iter() {
-        if entry.arc_name[0] == 0 {
-            break; // End of populated entries
-        }
-        if strcmp(oarc_name, entry.arc_name.as_ptr()) == 0 && entry.ref_count >= 1 {
-            return true;
-        }
-    }
-    false
-}
-
-/// Load a single OARC from Object/NX into both the global ARC_MGR table
-/// and the current stage's arc table.  dAcItem::init only queries the
-/// STAGE table, so having the OARC in ARC_MGR alone is not sufficient.
-///
-/// Writes diagnostic bits to AP_DEBUG_SLOTS[6] (oarc_diag).
-unsafe fn load_oarc_if_needed(oarc_name: *const c_char) {
-    // Load into ARC_MGR (global table) for general availability.
-    if !is_oarc_loaded(oarc_name) {
-        if !ARC_MGR.is_null() && !(*ARC_MGR).entries_table.entries.is_null() {
-            let arc_table = &mut (*ARC_MGR).entries_table as *mut mem::ArcEntryTable;
-            dRawArcTable_c__getArcOrLoadFromDisk(
-                arc_table,
-                oarc_name,
-                c"Object/NX".as_ptr(),
-                WORK2_HEAP,
-            );
-        }
-    }
-
-    // Also load into the STAGE table.
-    if !mem::STAGE_ARC_MGR.is_null() {
-        let stage_table = &mut (*mem::STAGE_ARC_MGR).entries_table as *mut mem::ArcEntryTable;
-        dRawArcTable_c__getArcOrLoadFromDisk(
-            stage_table,
-            oarc_name,
-            c"Object/NX".as_ptr(),
-            WORK2_HEAP,
-        );
-    }
-}
-
-/// Pre-load OARCs needed for an AP item into both ARC_MGR's global table
-/// AND the current stage's arc table.  Called BEFORE spawn_actor() so the
-/// OARC model data is available when dAcItem::init runs.
-///
-/// dAcItem::init queries the STAGE table (not ARC_MGR) to find model data.
-/// If the OARC isn't in the stage table, init fails silently and the item
-/// actor never displays.  Loading into both tables ensures availability
-/// regardless of which table a given code path queries.
-///
-/// This table is derived from sshd-rando-backend/data/items.yaml.
-/// For progressive items, we load ALL tier OARCs so the correct model is
-/// available regardless of which tier the player is at.
-/// Items not listed here are ObjectPack-native (already loaded globally).
-unsafe fn ensure_ap_item_oarcs_loaded(item_id: u16) {
-    if WORK2_HEAP.is_null() {
-        return; // Safety: can't load without heap
-    }
-    match item_id {
-        // Progressive Sword (Practice Sword model) + individual tiers
-        10 | 9 | 11 | 12 | 13 | 14 => {
-            load_oarc_if_needed(c"GetSwordA".as_ptr());
-        },
-        // Goddess's Harp + song items
-        16 | 186 | 187 | 188 | 189 | 190 | 191 | 192 | 193 => {
-            load_oarc_if_needed(c"GetHarp".as_ptr());
-        },
-        // Progressive Bow — load all tiers + individual tier ids
-        19 | 90 | 91 => {
-            load_oarc_if_needed(c"GetBowA".as_ptr());
-            load_oarc_if_needed(c"GetBowB".as_ptr());
-            load_oarc_if_needed(c"GetBowC".as_ptr());
-        },
-        // Clawshots
-        20 => {
-            load_oarc_if_needed(c"GetHookShot".as_ptr());
-        },
-        // Spiral Charge
-        21 => {
-            load_oarc_if_needed(c"GetBirdStatue".as_ptr());
-        },
-        // Boss keys
-        25 => {
-            load_oarc_if_needed(c"GetKeyBoss2A".as_ptr());
-        },
-        26 => {
-            load_oarc_if_needed(c"GetKeyBoss2B".as_ptr());
-        },
-        27 => {
-            load_oarc_if_needed(c"GetKeyBoss2C".as_ptr());
-        },
-        28 => {
-            load_oarc_if_needed(c"GetKeyKakera".as_ptr());
-        },
-        29 => {
-            load_oarc_if_needed(c"GetKeyBossA".as_ptr());
-        },
-        30 => {
-            load_oarc_if_needed(c"GetKeyBossB".as_ptr());
-        },
-        31 => {
-            load_oarc_if_needed(c"GetKeyBossC".as_ptr());
-        },
-        // Gust Bellows
-        49 => {
-            load_oarc_if_needed(c"GetVacuum".as_ptr());
-        },
-        // Progressive Slingshot + Scattershot
-        52 | 105 => {
-            load_oarc_if_needed(c"GetPachinkoA".as_ptr());
-            load_oarc_if_needed(c"GetPachinkoB".as_ptr());
-        },
-        // Progressive Beetle + individual tiers
-        53 | 75 | 76 | 77 => {
-            load_oarc_if_needed(c"GetBeetleA".as_ptr());
-            load_oarc_if_needed(c"GetBeetleB".as_ptr());
-            load_oarc_if_needed(c"GetBeetleC".as_ptr());
-            load_oarc_if_needed(c"GetBeetleD".as_ptr());
-        },
-        // Progressive Mitts + Mogma Mitts
-        56 | 99 => {
-            load_oarc_if_needed(c"GetMoleGloveA".as_ptr());
-            load_oarc_if_needed(c"GetMoleGloveB".as_ptr());
-        },
-        // 10 Deku Seeds
-        60 => {
-            load_oarc_if_needed(c"GetSeedSet".as_ptr());
-        },
-        // Bottles/potions
-        65 | 66 => {
-            load_oarc_if_needed(c"GetBottleMuteki".as_ptr());
-        },
-        // Water Dragon's Scale
-        68 => {
-            load_oarc_if_needed(c"GetUroko".as_ptr());
-        },
-        // Medals (Bug, Heart, Rupee, Treasure, Potion, Cursed, Life)
-        70 | 100 | 101 | 102 | 103 | 104 | 114 => {
-            load_oarc_if_needed(c"GetMedal".as_ptr());
-        },
-        // Progressive Bug Net + Big Bug Net
-        71 | 140 => {
-            load_oarc_if_needed(c"GetNetA".as_ptr());
-            load_oarc_if_needed(c"GetNetB".as_ptr());
-        },
-        // Sacred Water
-        74 => {
-            load_oarc_if_needed(c"GetBottleHoly".as_ptr());
-        },
-        // Heart Potion / Heart Potion Plus
-        78 | 79 => {
-            load_oarc_if_needed(c"GetBottleKusuri".as_ptr());
-        },
-        // Heart Potion Plus Plus
-        81 => {
-            load_oarc_if_needed(c"GetBottleKusuriS".as_ptr());
-        },
-        // Stamina Potion / Plus
-        84 | 85 => {
-            load_oarc_if_needed(c"GetBottleGuts".as_ptr());
-        },
-        // Air Potion / Plus
-        86 | 87 => {
-            load_oarc_if_needed(c"GetBottleAir".as_ptr());
-        },
-        // Bomb Bag
-        92 => {
-            load_oarc_if_needed(c"GetBombBag".as_ptr());
-        },
-        // Heart Container
-        93 => {
-            load_oarc_if_needed(c"GetHeartUtuwa".as_ptr());
-            load_oarc_if_needed(c"PutHeartUtuwa".as_ptr());
-        },
-        // Triforce pieces
-        95 | 96 | 97 => {
-            load_oarc_if_needed(c"PutTriForceSingle".as_ptr());
-            load_oarc_if_needed(c"GetTriForceSingle".as_ptr());
-        },
-        // Sea Chart
-        98 => {
-            load_oarc_if_needed(c"GetMapSea".as_ptr());
-        },
-        // Progressive Wallet + individual tiers
-        108 | 109 | 110 | 111 => {
-            load_oarc_if_needed(c"GetPurseB".as_ptr());
-            load_oarc_if_needed(c"GetPurseC".as_ptr());
-            load_oarc_if_needed(c"GetPurseD".as_ptr());
-            load_oarc_if_needed(c"GetPurseE".as_ptr());
-        },
-        // Progressive Pouch / Pouch Expansion
-        112 | 113 => {
-            load_oarc_if_needed(c"GetPouchA".as_ptr());
-            load_oarc_if_needed(c"GetPouchB".as_ptr());
-        },
-        // Wooden Shield
-        116 => {
-            load_oarc_if_needed(c"GetShieldWood".as_ptr());
-        },
-        // Hylian Shield
-        125 => {
-            load_oarc_if_needed(c"GetShieldHylia".as_ptr());
-        },
-        // Revitalizing Potion / Plus
-        126 | 127 => {
-            load_oarc_if_needed(c"GetBottleRepair".as_ptr());
-        },
-        // Small Seed Satchel
-        128 => {
-            load_oarc_if_needed(c"GetSpareSeedA".as_ptr());
-        },
-        // Small Quiver
-        131 => {
-            load_oarc_if_needed(c"GetSpareQuiverA".as_ptr());
-        },
-        // Small Bomb Bag
-        134 => {
-            load_oarc_if_needed(c"GetSpareBombBagA".as_ptr());
-        },
-        // Whip
-        137 => {
-            load_oarc_if_needed(c"GetWhip".as_ptr());
-        },
-        // Fireshield Earrings
-        138 => {
-            load_oarc_if_needed(c"GetEarring".as_ptr());
-        },
-        // Cawlin's Letter + Archipelago Item
-        158 | 216 => {
-            load_oarc_if_needed(c"GetKobunALetter".as_ptr());
-        },
-        // Beedle's Insect Cage
-        159 => {
-            load_oarc_if_needed(c"GetTerryCage".as_ptr());
-        },
-        // Rattle
-        160 => {
-            load_oarc_if_needed(c"GetGaragara".as_ptr());
-            load_oarc_if_needed(c"PutGaragara".as_ptr());
-        },
-        // Tumbleweed
-        163 => {
-            load_oarc_if_needed(c"GetSozaiC".as_ptr());
-        },
-        // Ancient Flower
-        166 => {
-            load_oarc_if_needed(c"GetSozaiF".as_ptr());
-        },
-        // Dusk Relic
-        168 => {
-            load_oarc_if_needed(c"GetSozaiH".as_ptr());
-        },
-        // Monster Horn
-        171 => {
-            load_oarc_if_needed(c"GetSozaiL".as_ptr());
-        },
-        // Blue Bird Feather
-        174 => {
-            load_oarc_if_needed(c"GetSozaiN".as_ptr());
-        },
-        // Golden Skull
-        175 => {
-            load_oarc_if_needed(c"GetSozaiO".as_ptr());
-        },
-        // Goddess Plume
-        176 => {
-            load_oarc_if_needed(c"GetSozaiP".as_ptr());
-        },
-        // Tablets
-        177 => {
-            load_oarc_if_needed(c"GetSekibanMapA".as_ptr());
-        },
-        178 => {
-            load_oarc_if_needed(c"GetSekibanMapB".as_ptr());
-        },
-        179 => {
-            load_oarc_if_needed(c"GetSekibanMapC".as_ptr());
-        },
-        // Stone of Trials
-        180 => {
-            load_oarc_if_needed(c"GetSirenKey".as_ptr());
-        },
-        // Revitalizing Potion Plus Plus
-        194 => {
-            load_oarc_if_needed(c"GetBottleRepairS".as_ptr());
-        },
-        // Pumpkin Soup
-        195 | 196 => {
-            load_oarc_if_needed(c"GetBottlePumpkin".as_ptr());
-        },
-        // Life Tree Seedling
-        197 => {
-            load_oarc_if_needed(c"GetSeedLife".as_ptr());
-        },
-        // Life Tree Fruit
-        198 => {
-            load_oarc_if_needed(c"GetFruitB".as_ptr());
-        },
-        // Extra Wallet
-        199 => {
-            load_oarc_if_needed(c"GetSparePurse".as_ptr());
-        },
-        // Tadtones
-        214 => {
-            load_oarc_if_needed(c"Onp".as_ptr());
-        },
-        // Scrapper
-        215 => {
-            load_oarc_if_needed(c"DesertRobot".as_ptr());
-        },
-        // Groose Trap
-        251 => {
-            load_oarc_if_needed(c"RivalCmnAnm".as_ptr());
-            load_oarc_if_needed(c"RivalNpcAnm".as_ptr());
-        },
-        // ObjectPack-native items (rupees, hearts, arrows, keys, maps, shields, etc.)
-        _ => {},
-    }
-}
-
 // Helper function to get fallback models for items without defined models.
 // Returns an ObjectPack archive name that is guaranteed to be loaded in every
 // stage.  Used as the last-resort fallback when the item's real OARC is not
@@ -1831,14 +1442,12 @@ fn get_fallback_model_for_item(_item_id: u16) -> *const c_char {
     c"GetRupee".as_ptr()
 }
 
-// Legacy flag — no longer drives model resolution logic but kept so
-// other code can check whether the current item originated from AP.
+// Set to true before spawning AP-delivered item actors so other code
+// can detect items originating from the Archipelago buffer.
 static mut AP_FORCE_FALLBACK_MODEL: bool = false;
 
 // Set by hook #46 when it falls back to GetRupee brres data.
 // Checked by hook #47 to also return "GetRupee" model name.
-// Without this, a mismatch (GetRupee brres + item's real model name)
-// causes invisible items because the model name isn't in GetRupee.
 static mut AP_HOOK46_USED_FALLBACK: bool = false;
 
 #[no_mangle]
@@ -1848,29 +1457,14 @@ pub extern "C" fn get_arc_model_from_item(
     item_id: u16,
 ) -> *mut c_void {
     unsafe {
-        // Reset the hook-mismatch flag for this item's init cycle.
         AP_HOOK46_USED_FALLBACK = false;
-
-        // Debug slots: record call
-        let seq = core::ptr::read_volatile(AP_DEBUG_SLOTS.as_ptr().add(1));
-        dbg_slot(1, seq.wrapping_add(1));
-        dbg_slot(2, item_id as u32);
-        dbg_slot(3, 0); // step not yet determined
-        dbg_slot(4, 0); // flags reset
-
-        // Minimal diagnostic: compare game's arc_table with STAGE_ARC_MGR
-        dbg_slot(6, arc_table as usize as u32);
-        dbg_slot(7, (mem::STAGE_ARC_MGR as usize).wrapping_add(0x68) as u32);
 
         // Resolve the arc name through progressive item logic.
         let resolved_model_name = resolve_progressive_item_models(arc_name, item_id, 1);
 
         // If resolution returned null, use GetRupee fallback.
         if resolved_model_name.is_null() {
-            dbg_slot(3, 4); // step 4 = fallback
-            dbg_slot(4, 0x3); // flags: resolved_null | fallback
-            let fb = core::ptr::read_volatile(AP_DEBUG_SLOTS.as_ptr().add(5));
-            dbg_slot(5, fb.wrapping_add(1));
+            AP_HOOK46_USED_FALLBACK = true;
             let fallback_model = get_fallback_model_for_item(item_id);
             return dRawArcTable_c__getDataFromOarc(
                 arc_table,
@@ -1879,65 +1473,23 @@ pub extern "C" fn get_arc_model_from_item(
             );
         }
 
-        // 1. Try the stage's arc table
+        // All item OARCs are injected into every room's ARCN layer 0
+        // at build time, so they load synchronously during stage transitions.
+        // This lookup should always succeed.
         let result = dRawArcTable_c__getDataFromOarc(
             arc_table,
             resolved_model_name,
             c"g3d/model.brres".as_ptr(),
         );
         if !result.is_null() {
-            dbg_slot(3, 1); // step 1 = stage table hit
             return result;
         }
 
-        // 2. Stage table didn't have it — try loading from Object/NX
-        if !WORK2_HEAP.is_null() {
-            let stage_table = arc_table as *mut mem::ArcEntryTable;
-            dRawArcTable_c__getArcOrLoadFromDisk(
-                stage_table,
-                resolved_model_name,
-                c"Object/NX".as_ptr(),
-                WORK2_HEAP,
-            );
-
-            let result2 = dRawArcTable_c__getDataFromOarc(
-                arc_table,
-                resolved_model_name,
-                c"g3d/model.brres".as_ptr(),
-            );
-            if !result2.is_null() {
-                dbg_slot(3, 2); // step 2 = loaded from disk
-                return result2;
-            }
-        }
-
-        // 3. ARC_MGR fallback
-        if !ARC_MGR.is_null() {
-            let arc_mgr_table =
-                &mut (*ARC_MGR).entries_table as *mut mem::ArcEntryTable as *mut c_void;
-            let result3 = dRawArcTable_c__getDataFromOarc(
-                arc_mgr_table,
-                resolved_model_name,
-                c"g3d/model.brres".as_ptr(),
-            );
-            if !result3.is_null() {
-                dbg_slot(3, 3); // step 3 = ARC_MGR hit
-                return result3;
-            }
-        }
-
-        // 4. GetRupee fallback
-        dbg_slot(3, 4); // step 4 = fallback
-        dbg_slot(4, 0x2); // flags: fallback (resolved was not null)
-        let fb = core::ptr::read_volatile(AP_DEBUG_SLOTS.as_ptr().add(5));
-        dbg_slot(5, fb.wrapping_add(1));
+        // Fallback to GetRupee if the OARC wasn't found (shouldn't happen
+        // with ARCN injection, but provides a safety net).
         AP_HOOK46_USED_FALLBACK = true;
         let fallback_model = get_fallback_model_for_item(item_id);
-        return dRawArcTable_c__getDataFromOarc(
-            arc_table,
-            fallback_model,
-            c"g3d/model.brres".as_ptr(),
-        );
+        dRawArcTable_c__getDataFromOarc(arc_table, fallback_model, c"g3d/model.brres".as_ptr())
     }
 }
 
@@ -2436,18 +1988,8 @@ pub extern "C" fn archipelago_check_item_buffer() {
             };
             let param1: u32 = spawn_id | (0xFFu32 << 10) | 0x580000;
 
-            // Pre-load the item's OARCs into ARC_MGR's global table.
-            // The on-demand loader in get_arc_model_from_item (hook #46)
-            // will load into the stage's own table when the model is first
-            // queried during dAcItem::init.
-            //
-            // Load with BOTH the original base id (for progressive item
-            // match arms) AND the resolved spawn_id (for individual tier
-            // match arms, e.g., item 13 Master Sword → falls to sword arm).
-            ensure_ap_item_oarcs_loaded(item_id_val as u16);
-            if spawn_id as u16 != item_id_val as u16 {
-                ensure_ap_item_oarcs_loaded(spawn_id as u16);
-            }
+            // All item OARCs are now in ObjectPack (loaded globally at boot),
+            // so no async pre-load is needed — spawn immediately.
 
             AP_FORCE_FALLBACK_MODEL = true;
 

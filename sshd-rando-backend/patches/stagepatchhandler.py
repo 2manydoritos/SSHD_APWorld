@@ -52,6 +52,46 @@ from filepathconstants import (
 
 args = get_program_args()
 
+# OARCs needed for AP-delivered items. Added to every room's layer 0 ARCN so
+# they load synchronously during stage transitions. This ensures correct 3D
+# models for items received from the Archipelago network in any stage.
+# Names are bare OARC names (no .arc extension), matching BZS ARCN format.
+# Only includes OARCs NOT already in ObjectPack (those are globally available).
+AP_ITEM_OARC_NAMES: frozenset[str] = frozenset({
+    "GetSwordA", "GetHarp",
+    "GetBowA", "GetBowB", "GetBowC",
+    "GetHookShot", "GetBirdStatue",
+    "GetKeyBoss2A", "GetKeyBoss2B", "GetKeyBoss2C",
+    "GetKeyKakera", "GetKeyBossA", "GetKeyBossB", "GetKeyBossC",
+    "GetVacuum", "GetPachinkoA", "GetPachinkoB",
+    "GetBeetleA", "GetBeetleB", "GetBeetleC", "GetBeetleD",
+    "GetMoleGloveA", "GetMoleGloveB", "GetSeedSet",
+    "GetBottleMuteki", "GetUroko", "GetMedal",
+    "GetNetA", "GetNetB", "GetBottleHoly",
+    "GetBottleKusuri", "GetBottleKusuriS",
+    "GetBottleGuts", "GetBottleAir", "GetBombBag",
+    "GetHeartUtuwa", "PutHeartUtuwa",
+    "PutTriForceSingle", "GetTriForceSingle",
+    "GetMapSea",
+    "GetPurseB", "GetPurseC", "GetPurseD", "GetPurseE",
+    "GetPouchA", "GetPouchB",
+    "GetShieldWood", "GetShieldHylia",
+    "GetBottleRepair", "GetBottleRepairS",
+    "GetSpareSeedA", "GetSpareQuiverA", "GetSpareBombBagA",
+    "GetWhip", "GetEarring",
+    "GetKobunALetter", "GetTerryCage",
+    "GetGaragara", "PutGaragara",
+    "GetSozaiC", "GetSozaiF", "GetSozaiH",
+    "GetSozaiL", "GetSozaiN", "GetSozaiO", "GetSozaiP",
+    "GetSekibanMapA", "GetSekibanMapB", "GetSekibanMapC",
+    "GetSirenKey",
+    "GetBottlePumpkin", "GetSeedLife", "GetFruitB",
+    "GetSparePurse",
+    "Onp", "DesertRobot", "RivalCmnAnm", "RivalNpcAnm",
+    "GetBlueRupee", "GetRedRupee", "GetSilverRupee",
+    "GetGoldRupee", "GetRupoor",
+})
+
 
 def patch_tbox(
     bzs: dict, itemid: int, object_id_str: str, trapid: int, tbox_subtype: int,
@@ -975,6 +1015,13 @@ class StagePatchHandler:
 
                 room_bzs_bytes = room_bzs_path.read_bytes()
                 room_bzs = parse_bzs(room_bzs_bytes)
+
+                # Inject all AP item OARCs into layer 0 (always active) so
+                # they load synchronously during stage transitions.
+                l0 = room_bzs["LAY "]["l0"]
+                l0_arcn = set(l0.get("ARCN", []))
+                l0_arcn |= AP_ITEM_OARC_NAMES
+                l0["ARCN"] = list(l0_arcn)
 
                 nextid = get_highest_object_id(bzs=room_bzs) + 1
 
