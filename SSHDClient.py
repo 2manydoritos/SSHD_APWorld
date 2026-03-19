@@ -1807,9 +1807,11 @@ class SSHDContext(CommonContext):
         if is_progressive:
             count = next_count
             if item_name == "Progressive Sword":
-                # Tier 1-4: Goddess Longsword → White Sword → Master Sword → True Master Sword
-                sword_tiers = ["Goddess Longsword", "Goddess White Sword", "Master Sword", "True Master Sword"]
-                actual_item_name = sword_tiers[min(count - 1, 3)]
+                # 6 tiers: Practice → Goddess → Longsword → White → Master → True Master
+                # Tier 1 uses "Progressive Sword" because that's the ITEM_TABLE
+                # name for game_id 10 (the Practice Sword).
+                sword_tiers = ["Progressive Sword", "Goddess Sword", "Goddess Longsword", "Goddess White Sword", "Master Sword", "True Master Sword"]
+                actual_item_name = sword_tiers[min(count - 1, 5)]
                 logger.debug(f"Progressive Sword #{count} -> {actual_item_name}")
             elif item_name == "Progressive Bow":
                 # Tier 1: base Bow (game item 19), 2: Iron Bow, 3: Sacred Bow
@@ -1853,16 +1855,38 @@ class SSHDContext(CommonContext):
                 if not self.game_item_system:
                     self.game_item_system = GameItemSystem(self.memory)
                 
+                # For progressive items, always send the PROGRESSIVE BASE ID to
+                # the game buffer.  The Rust code's resolve_progressive_item_models()
+                # handles model selection for progressive IDs (10, 19, 53, etc.)
+                # correctly, dynamically picking the right model based on current
+                # inventory flags.  Sending concrete stage IDs (e.g. 14 for True
+                # Master Sword, 90 for Iron Bow) breaks because:
+                #  - Concrete IDs may have oarc: null (swords) → green rupee fallback
+                #  - Concrete IDs may need arcs not loaded in the current stage
+                #    (bow, beetle) → invisible/missing model
+                buffer_item_name = item_name if is_progressive else actual_item_name
+                
                 # Use the integrated system (spawns items with animations)
-                success = self.game_item_system.give_item_by_name(actual_item_name)
+                success = self.game_item_system.give_item_by_name(buffer_item_name)
                 if success:
                     # Only commit the progressive counter increment on success
                     # so retries don't skip tiers
                     if is_progressive:
                         self.progressive_counts[item_name] = next_count
-                    logger.debug(f"Gave {actual_item_name} via item buffer (game will handle animation)")
+                        
+                        # For tier 2+ progressive items, the buffer used the
+                        # progressive base ID (which sets the base flag, e.g.
+                        # BOW for id=19).  We also need to set the concrete
+                        # tier's flag (e.g. IRON_BOW for id=90) so the game
+                        # recognises the upgraded item in inventory.
+                        if actual_item_name != buffer_item_name and actual_item_name in ITEM_TABLE:
+                            concrete_data = ITEM_TABLE[actual_item_name]
+                            self.game_item_system._ensure_itemflag_set(concrete_data.original_id)
+                            logger.debug(f"Set concrete tier flag: {actual_item_name} (id={concrete_data.original_id})")
+                    
+                    logger.debug(f"Gave {buffer_item_name} via item buffer (game will handle animation)")
                 else:
-                    logger.debug(f"Failed to give {actual_item_name} via item system (player may be busy)")
+                    logger.debug(f"Failed to give {buffer_item_name} via item system (player may be busy)")
                 return success
             except Exception as e:
                 logger.warning(f"Item system error for {actual_item_name}: {e}")

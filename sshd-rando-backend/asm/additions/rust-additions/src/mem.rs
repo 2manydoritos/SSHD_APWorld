@@ -201,7 +201,7 @@ extern "C" {
     static LAYOUT_RES_HEAP: *mut Heap;
 
     static ARC_MGR: *mut ArcMgr;
-    static STAGE_ARC_MGR: *mut StageArcMgr;
+    pub static STAGE_ARC_MGR: *mut StageArcMgr;
 
     static mut NEXT_STAGE_NAME: [u8; 8];
 

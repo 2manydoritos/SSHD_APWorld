@@ -3,11 +3,11 @@
 #![allow(unused)]
 
 use crate::actor;
-use crate::debug;
 use crate::event;
 use crate::fix;
 use crate::flag;
 use crate::math;
+use crate::mem;
 use crate::player;
 use crate::savefile;
 use crate::settings;
@@ -1357,13 +1357,17 @@ pub extern "C" fn resolve_progressive_item_models(
         }
 
         match item_id {
-            // Progressive Sword - always use Practice Sword model
-            // (can't know which tier the player will get next)
-            10 => {
+            // Progressive Sword — always use Practice Sword model.
+            // Also handle individual sword tier IDs (9, 11-14) that
+            // determineFinalItemid may resolve to — these have oarc=null
+            // in items.yaml so their game-table arc names may not exist
+            // in Object/NX.  Using GetSwordA (which IS in Object/NX)
+            // ensures a valid model is always available.
+            10 | 9 | 11 | 12 | 13 | 14 => {
                 return c"GetSwordA".as_ptr();
             },
-            // Progressive Bow
-            19 => {
+            // Progressive Bow + individual tiers
+            19 | 90 | 91 => {
                 if flag::check_itemflag(flag::ITEMFLAGS::BOW) == 0 {
                     return c"GetBowA".as_ptr();
                 }
@@ -1372,15 +1376,15 @@ pub extern "C" fn resolve_progressive_item_models(
                 }
                 return c"GetBowC".as_ptr();
             },
-            // Progressive Slingshot
-            52 => {
+            // Progressive Slingshot + Scattershot
+            52 | 105 => {
                 if flag::check_itemflag(flag::ITEMFLAGS::SLINGSHOT) == 0 {
                     return c"GetPachinkoA".as_ptr();
                 }
                 return c"GetPachinkoB".as_ptr();
             },
-            // Progressive Beetle
-            53 => {
+            // Progressive Beetle + individual tiers
+            53 | 75 | 76 | 77 => {
                 if flag::check_itemflag(flag::ITEMFLAGS::BEETLE) == 0 {
                     return c"GetBeetleA".as_ptr();
                 }
@@ -1392,22 +1396,22 @@ pub extern "C" fn resolve_progressive_item_models(
                 }
                 return c"GetBeetleD".as_ptr();
             },
-            // Progressive Mitts
-            56 => {
+            // Progressive Mitts + Mogma Mitts
+            56 | 99 => {
                 if flag::check_itemflag(flag::ITEMFLAGS::DIGGING_MITTS) == 0 {
                     return c"GetMoleGloveA".as_ptr();
                 }
                 return c"GetMoleGloveB".as_ptr();
             },
-            // Progressive Bug Net
-            71 => {
+            // Progressive Bug Net + Big Bug Net
+            71 | 140 => {
                 if flag::check_itemflag(flag::ITEMFLAGS::BUG_NET) == 0 {
                     return c"GetNetA".as_ptr();
                 }
                 return c"GetNetB".as_ptr();
             },
-            // Progressive Wallet
-            108 => {
+            // Progressive Wallet + individual tiers
+            108 | 109 | 110 | 111 => {
                 if flag::check_itemflag(flag::ITEMFLAGS::MEDIUM_WALLET) == 0 {
                     return c"GetPurseB".as_ptr();
                 }
@@ -1427,15 +1431,24 @@ pub extern "C" fn resolve_progressive_item_models(
 }
 
 // Helper function to get fallback models for items without defined models.
-// Uses GetRupee because it's in the ObjectPack and always available in every
-// stage.
-fn get_fallback_model_for_item(item_id: u16) -> *const c_char {
-    match item_id {
-        // Progressive Sword - always use Practice Sword model
-        10 => c"GetSwordA".as_ptr(),
-        _ => c"GetRupee".as_ptr(),
-    }
+// Returns an ObjectPack archive name that is guaranteed to be loaded in every
+// stage.  Used as the last-resort fallback when the item's real OARC is not
+// available.  We intentionally use only GetRupee here because it is the one
+// archive that is unconditionally present in ObjectPack across all stages.
+// Attempting to use other archive names (even ones that "should" be in
+// ObjectPack) risks a null model pointer if the game's internal naming
+// doesn't match our assumption.
+fn get_fallback_model_for_item(_item_id: u16) -> *const c_char {
+    c"GetRupee".as_ptr()
 }
+
+// Set to true before spawning AP-delivered item actors so other code
+// can detect items originating from the Archipelago buffer.
+static mut AP_FORCE_FALLBACK_MODEL: bool = false;
+
+// Set by hook #46 when it falls back to GetRupee brres data.
+// Checked by hook #47 to also return "GetRupee" model name.
+static mut AP_HOOK46_USED_FALLBACK: bool = false;
 
 #[no_mangle]
 pub extern "C" fn get_arc_model_from_item(
@@ -1444,21 +1457,14 @@ pub extern "C" fn get_arc_model_from_item(
     item_id: u16,
 ) -> *mut c_void {
     unsafe {
-        // Safety check: If arc_name is null (item has no model defined),
-        // use a fallback model based on item type. This happens with bugs/treasures.
-        if arc_name.is_null() {
-            let fallback_model = get_fallback_model_for_item(item_id);
-            return dRawArcTable_c__getDataFromOarc(
-                arc_table,
-                fallback_model,
-                c"g3d/model.brres".as_ptr(),
-            );
-        }
+        AP_HOOK46_USED_FALLBACK = false;
 
+        // Resolve the arc name through progressive item logic.
         let resolved_model_name = resolve_progressive_item_models(arc_name, item_id, 1);
 
-        // Additional safety check after resolution - use fallback
+        // If resolution returned null, use GetRupee fallback.
         if resolved_model_name.is_null() {
+            AP_HOOK46_USED_FALLBACK = true;
             let fallback_model = get_fallback_model_for_item(item_id);
             return dRawArcTable_c__getDataFromOarc(
                 arc_table,
@@ -1467,11 +1473,23 @@ pub extern "C" fn get_arc_model_from_item(
             );
         }
 
-        return dRawArcTable_c__getDataFromOarc(
+        // All item OARCs are injected into every room's ARCN layer 0
+        // at build time, so they load synchronously during stage transitions.
+        // This lookup should always succeed.
+        let result = dRawArcTable_c__getDataFromOarc(
             arc_table,
             resolved_model_name,
             c"g3d/model.brres".as_ptr(),
         );
+        if !result.is_null() {
+            return result;
+        }
+
+        // Fallback to GetRupee if the OARC wasn't found (shouldn't happen
+        // with ARCN injection, but provides a safety net).
+        AP_HOOK46_USED_FALLBACK = true;
+        let fallback_model = get_fallback_model_for_item(item_id);
+        dRawArcTable_c__getDataFromOarc(arc_table, fallback_model, c"g3d/model.brres".as_ptr())
     }
 }
 
@@ -1481,20 +1499,34 @@ pub extern "C" fn get_item_model_name_ptr(
     item_id: u16,
 ) -> *const c_char {
     unsafe {
-        // Safety check: If model_name is null (item has no model defined),
-        // use fallback model name. This happens with bugs/treasures.
-        if model_name.is_null() {
+        // If hook #46 fell back to GetRupee brres data, the model name MUST
+        // also be "GetRupee" — otherwise the game tries to find e.g.
+        // "GetSwordA" inside GetRupee's brres, which fails silently and
+        // the item actor becomes invisible.
+        if AP_HOOK46_USED_FALLBACK {
+            AP_HOOK46_USED_FALLBACK = false;
+
             // Replaced code still needs to execute
             asm!("mov x1, {0:x}", in(reg) item_id);
             asm!("cmp x1, #0x1C");
-            return get_fallback_model_for_item(item_id);
+
+            return c"GetRupee".as_ptr();
         }
 
+        // Resolve progressive model names.  We pass model_name even if null —
+        // for individual progressive tiers (e.g., id=13 Master Sword) the game's
+        // item table has model=null, but resolve_progressive_item_models returns
+        // the correct model name (e.g., "GetSwordA") via its match arms.
         let resolved_model_name = resolve_progressive_item_models(model_name, item_id, 2);
 
-        // Replaced code
+        // Replaced code still needs to execute
         asm!("mov x1, {0:x}", in(reg) item_id);
         asm!("cmp x1, #0x1C");
+
+        // If still null after resolution, use fallback.
+        if resolved_model_name.is_null() {
+            return get_fallback_model_for_item(item_id);
+        }
 
         return resolved_model_name;
     }
@@ -1857,19 +1889,72 @@ fn player_is_busy() -> bool {
     }
 }
 
+// ── Stage-transition cooldown ──────────────────────────────────────────
+//
+// When the game loads a new stage, there is a window (several hundred
+// milliseconds) during which the room/actor/heap infrastructure is not
+// fully initialised.  If we try to spawn an item actor during that
+// window the spawn silently fails or produces a broken actor — the
+// buffer slot gets consumed but the player never sees the item.
+//
+// We detect stage changes by comparing CURRENT_STAGE_NAME to a cached
+// copy and impose a cooldown of STAGE_COOLDOWN_FRAMES (~1–2 s at
+// 30/60 fps) before processing any buffer items.  This gives the
+// engine enough time to finish loading rooms, OARCs and heaps.
+
+/// Frames to wait after a stage transition before delivering items.
+const STAGE_COOLDOWN_FRAMES: u32 = 90;
+
+/// Maximum frames a single buffer slot will be retried before giving up
+/// and clearing it (the Python direct-flag fallback ensures inventory
+/// correctness regardless).
+const MAX_RETRY_FRAMES: u32 = 300;
+
+static mut AP_LAST_STAGE: [u8; 8] = [0u8; 8];
+static mut AP_STAGE_COOLDOWN: u32 = 0;
+
+/// Per-slot retry counters — one for each buffer slot (excluding slot 0
+/// which holds the magic signature).
+static mut AP_SLOT_RETRIES: [u32; ARCHIPELAGO_BUFFER_SIZE] = [0u32; ARCHIPELAGO_BUFFER_SIZE];
+
+/// Returns true if we are still in the post-stage-transition cooldown
+/// and should NOT process buffer items this frame.
+#[inline]
+fn ap_stage_cooldown_active() -> bool {
+    unsafe {
+        // Detect stage change.
+        let cur = core::ptr::read_volatile(core::ptr::addr_of!(CURRENT_STAGE_NAME));
+        if cur != AP_LAST_STAGE {
+            AP_LAST_STAGE = cur;
+            AP_STAGE_COOLDOWN = STAGE_COOLDOWN_FRAMES;
+        }
+        if AP_STAGE_COOLDOWN > 0 {
+            AP_STAGE_COOLDOWN -= 1;
+            return true;
+        }
+        false
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn archipelago_check_item_buffer() {
     unsafe {
+        // Wait for the stage to finish loading before we attempt any spawns.
+        if ap_stage_cooldown_active() {
+            return;
+        }
+
         // Check each slot in the buffer
         // Skip slot 0 which contains the magic signature
-        for (i, slot) in ARCHIPELAGO_ITEM_BUFFER.iter_mut().enumerate() {
-            // Skip the first slot (magic signature)
-            if i == 0 {
-                continue;
-            }
+        for i in 1..ARCHIPELAGO_BUFFER_SIZE {
+            // Use volatile read because Python writes to this buffer via
+            // cross-process WriteProcessMemory.  Without volatile the
+            // compiler could hoist or elide loads across frames.
+            let slot_ptr = ARCHIPELAGO_ITEM_BUFFER.as_mut_ptr().add(i);
+            let item_id_val = core::ptr::read_volatile(core::ptr::addr_of!((*slot_ptr).item_id));
 
             // Skip empty slots
-            if slot.item_id == 0 {
+            if item_id_val == 0 {
                 continue;
             }
 
@@ -1879,80 +1964,174 @@ pub extern "C" fn archipelago_check_item_buffer() {
                 return;
             }
 
-            // Item found — give it to the player.
-            //
-            // Design notes:
-            //
-            // 1. We DO NOT call dAcItem__determineFinalItemid(). The Python client already
-            //    resolves progressive items to their concrete tier (e.g. "Progressive Bow
-            //    #2" → Iron Bow with game ID 90).  The vanilla determineFinalItemid may
-            //    reject or transform the ID based on inventory state that does not match
-            //    the multiworld's logic, returning 0 for items it considers invalid —
-            //    which silently makes the item actor spawn as "nothing" and the player
-            //    never receives their item.
-            //
-            // 2. We use param1 flag 0x180000 (bits 19+20, bit 22 clear) instead of
-            //    give_item_with_sceneflag's 0x580000 (bit 22 set).  Bit 22 makes the item
-            //    actor *freestanding* (waits for physical pickup), while 0x180000 is
-            //    *event-triggered* and immediately enters the "Link holds up item"
-            //    sequence. This matches give_item_with_archipelago_flag().
-            //
-            // 3. We spawn the item at the player's position rather than null (origin) to
-            //    ensure the actor is in a valid location within the current room.
-
-            // Safety: skip if PLAYER_PTR is null (shouldn't happen if
-            // player_is_busy() passed, but guard anyway).
+            // Safety: skip if PLAYER_PTR is null.
             if PLAYER_PTR.is_null() {
                 return;
             }
 
+            // Resolve progressive items (e.g., Progressive Bow → Iron Bow)
+            // to their concrete tier based on the player's current inventory
+            // so the correct OARC model is loaded and the right item actor
+            // is spawned.
+            let item_id = item_id_val as u64;
+            let final_id = dAcItem__determineFinalItemid(item_id) as u16;
+
             NUMBER_OF_ITEMS = 0;
             ITEM_GET_BOTTLE_POUCH_SLOT = 0xFFFFFFFF;
 
-            // Use item ID directly — no determineFinalItemid (see note 1).
-            let item_id = slot.item_id as u32;
+            // Use the resolved item ID for spawning so the game's item
+            // table can look up the correct OARC and model.
+            let spawn_id = if final_id > 0 {
+                final_id as u32
+            } else {
+                item_id_val as u32
+            };
+            let param1: u32 = spawn_id | (0xFFu32 << 10) | 0x580000;
 
-            // 0x180000 = event-triggered item (immediate collection).
-            // 0xFF << 10 = sceneflag 0xFF → "no sceneflag to set".
-            let param1: u32 = item_id | (0xFFu32 << 10) | 0x180000;
+            // All item OARCs are now in ObjectPack (loaded globally at boot),
+            // so no async pre-load is needed — spawn immediately.
 
-            // Spawn at player position (note 3).
-            let mut pos = (*PLAYER_PTR).obj_base_members.base.pos;
-            let pos_ptr = &mut pos as *mut math::Vec3f;
+            AP_FORCE_FALLBACK_MODEL = true;
+
+            let player_pos_ptr = core::ptr::addr_of_mut!((*PLAYER_PTR).obj_base_members.base.pos);
 
             let item_actor: *mut dAcItem = actor::spawn_actor(
                 actor::ACTORID::ITEM,
                 (*ROOM_MGR).roomid.into(),
                 param1,
-                pos_ptr,
+                player_pos_ptr,
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
                 0xFFFFFFFF,
             ) as *mut dAcItem;
 
+            AP_FORCE_FALLBACK_MODEL = false;
+
             ITEM_GET_BOTTLE_POUCH_SLOT = 0xFFFFFFFF;
             NUMBER_OF_ITEMS = 0;
 
-            // Force textbox for AP-delivered items.  check_and_modify_item_actor
-            // suppresses textboxes for common items (rupees, hearts, etc.) but for
-            // AP items the player needs to see what the multiworld sent them.
-            // We override param1 AFTER init so check_and_modify_item_actor (which
-            // runs during boot for ALL items) stays completely untouched.
             if !item_actor.is_null() {
+                // Clear bit 9 to allow textbox display for AP items.
                 (*item_actor).base.basebase.members.param1 &= !0x200u32;
-            }
+                (*item_actor).prevent_timed_despawn = 1;
+                (*item_actor).no_longer_waiting = 1;
 
-            // Clear the slot after processing — even on null actor result.
-            // The Python client provides a direct item-flag-write fallback
-            // that guarantees the item reaches the player's inventory
-            // regardless of whether the actor spawned successfully.
-            slot.item_id = 0;
-            slot.flags = 0;
-            slot._reserved = [0, 0];
+                // Spawn succeeded — clear the buffer slot and reset retries.
+                core::ptr::write_volatile(core::ptr::addr_of_mut!((*slot_ptr).item_id), 0u8);
+                core::ptr::write_volatile(core::ptr::addr_of_mut!((*slot_ptr).flags), 0u8);
+                (*slot_ptr)._reserved = [0, 0];
+                AP_SLOT_RETRIES[i] = 0;
+            } else {
+                // Spawn returned null — increment retry counter.
+                // If we've retried too many times, give up and clear the
+                // slot.  The Python client's DirectFlags fallback will
+                // ensure the item is not lost (it writes save-file flags
+                // after its own timeout).
+                AP_SLOT_RETRIES[i] += 1;
+                if AP_SLOT_RETRIES[i] >= MAX_RETRY_FRAMES {
+                    core::ptr::write_volatile(core::ptr::addr_of_mut!((*slot_ptr).item_id), 0u8);
+                    core::ptr::write_volatile(core::ptr::addr_of_mut!((*slot_ptr).flags), 0u8);
+                    (*slot_ptr)._reserved = [0, 0];
+                    AP_SLOT_RETRIES[i] = 0;
+                }
+            }
 
             // Only process one item per frame to avoid overwhelming the game
             break;
         }
+    }
+}
+
+/// Set dungeon-specific flags for boss keys, small keys, and maps.
+/// Replicates the dungeon item logic from handle_custom_item_get() so
+/// that AP-delivered dungeon items update both local and global dungeon
+/// flags immediately, without needing the item actor's stateGet flow.
+unsafe fn ap_set_dungeon_item_flags(itemid: u16) {
+    const BK_TO_FLAGINDEX: [usize; 7] = [
+        12,  // AC BK - item id 25
+        15,  // FS BK - item id 26
+        18,  // SSH BK - item id 27
+        255, // unused (item id 28 = Key Piece, not a boss key)
+        11,  // SVT BK - item id 29
+        14,  // ET BK - item id 30
+        17,  // LMF BK - item id 31
+    ];
+
+    const SK_TO_FLAGINDEX: [usize; 7] = [
+        11, // SVT SK - item id 200
+        17, // LMF SK - item id 201
+        12, // AC SK - item id 202
+        15, // FS SK - item id 203
+        18, // SSH SK - item id 204
+        20, // SK SK - item id 205
+        9,  // Caves SK - item id 206
+    ];
+
+    const MAP_TO_FLAGINDEX: [usize; 7] = [
+        11, // SVT MAP - item id 207
+        14, // ET MAP - item id 208
+        17, // LMF MAP - item id 209
+        12, // AC MAP - item id 210
+        15, // FS MAP - item id 211
+        18, // SSH MAP - item id 212
+        20, // SK MAP - item id 213
+    ];
+
+    let mut dungeon_item_mask: u16 = 0;
+
+    if (itemid >= 25 && itemid <= 27) || (itemid >= 29 && itemid <= 31) {
+        dungeon_item_mask = 0x80; // boss keys
+    }
+    if dungeon_item_mask == 0 && itemid >= 200 && itemid <= 206 {
+        dungeon_item_mask = 0x0F; // small keys
+    }
+    if dungeon_item_mask == 0 && itemid >= 207 && itemid <= 213 {
+        dungeon_item_mask = 0x02; // maps
+    }
+
+    if dungeon_item_mask == 0 {
+        return; // Not a dungeon item
+    }
+
+    let current_scene_index = (*DUNGEONFLAG_MGR).sceneindex as usize;
+    let dungeon_item_scene_index: usize;
+
+    if dungeon_item_mask == 0x80 {
+        dungeon_item_scene_index = BK_TO_FLAGINDEX[(itemid - 25) as usize];
+    } else if dungeon_item_mask == 0x0F {
+        dungeon_item_scene_index = SK_TO_FLAGINDEX[(itemid - 200) as usize];
+    } else {
+        dungeon_item_scene_index = MAP_TO_FLAGINDEX[(itemid - 207) as usize];
+    }
+
+    if dungeon_item_scene_index == 0xFF {
+        return; // Invalid index (e.g., Key Piece at id 28)
+    }
+
+    // Set the local flag if the player is in the dungeon right now.
+    if current_scene_index == dungeon_item_scene_index {
+        if dungeon_item_mask != 0x0F {
+            STATIC_DUNGEONFLAGS[0] |= dungeon_item_mask;
+        } else {
+            let mut current_key_count = STATIC_DUNGEONFLAGS[1] & 0xF;
+            let mut obtained_key_count = (STATIC_DUNGEONFLAGS[1] >> 4) & 0xF;
+            current_key_count += 1;
+            obtained_key_count += 1;
+            STATIC_DUNGEONFLAGS[1] = (obtained_key_count << 4) | current_key_count;
+        }
+    }
+
+    // Always set the global (save file) flag.
+    if dungeon_item_mask != 0x0F {
+        (*FILE_MGR).FA.dungeonflags[dungeon_item_scene_index][0] |= dungeon_item_mask;
+    } else {
+        let mut current_key_count = (*FILE_MGR).FA.dungeonflags[dungeon_item_scene_index][1] & 0xF;
+        let mut obtained_key_count =
+            ((*FILE_MGR).FA.dungeonflags[dungeon_item_scene_index][1] >> 4) & 0xF;
+        current_key_count += 1;
+        obtained_key_count += 1;
+        (*FILE_MGR).FA.dungeonflags[dungeon_item_scene_index][1] =
+            (obtained_key_count << 4) | current_key_count;
     }
 }
 
