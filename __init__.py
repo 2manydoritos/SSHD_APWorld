@@ -151,7 +151,7 @@ else:
 
 # Version information
 AP_VERSION = [0, 6, 5]
-WORLD_VERSION = [0, 7, 0]  # Starting at [BETA] 0.7.0 for SSHD
+WORLD_VERSION = [0, 7, 1]  # Starting at [BETA] 0.7.0 for SSHD
 RANDO_VERSION = [0, 1, 0]
 
 
