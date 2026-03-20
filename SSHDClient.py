@@ -1943,6 +1943,14 @@ class SSHDContext(CommonContext):
                     self.beetle_patch_applied = False
                     self.memory.invalidate_base()
 
+                    # Reset custom flag initialization state so the next
+                    # check_custom_flags() call re-captures current flag
+                    # values instead of comparing against stale data from
+                    # the old (invalid) base address.
+                    if hasattr(self, '_logged_addresses'):
+                        del self._logged_addresses
+                    self.previous_custom_flags.clear()
+
                     # Immediately attempt a new base-address scan instead of
                     # waiting for the next cycle (which would spin doing
                     # nothing since connected=True but base_address=None).
@@ -2103,20 +2111,13 @@ class SSHDContext(CommonContext):
             # (cheat_loop_task) for minimal input lag.
             # ============================================================
             
-            # Check for completed locations using custom flags or LocationFlags.py data
+            # Check for completed locations using custom flags
             if self.custom_flag_to_location:
                 # Use custom flag system (preferred for SSHD)
                 await self.check_custom_flags()
                 # Supplement: shop purchases don't set custom scene/dungeon flags,
                 # so also check Beedle's sold-out storyflags from the save file.
                 await self.check_beedle_shop_storyflags()
-            elif LOCATION_FLAG_MAP:
-                # Fallback to LocationFlags.py - but only if static memory is accessible
-                # Test if we can read the first static flag address to avoid error spam
-                test_read = self.memory.read_byte(OFFSET_SCENE_FLAGS_STATIC)
-                if test_read is not None:
-                    # NOTE: FLAG_SCENE should work (uses SSHD addresses), but FLAG_STORY has Wii addresses
-                    await self.check_all_locations()
             
             # Send any newly checked locations to server (locations not yet sent)
             new_locations = self.checked_locations.difference(self.sent_locations)
@@ -2838,13 +2839,19 @@ class SSHDContext(CommonContext):
                     self._error_suppression[scene_key] = True
         
         # Clear initialization flag after first complete poll (outside the loop)
+        # Only clear if ALL flags were successfully read (i.e. every flag_id in
+        # the mapping got a recorded state). If some scene reads failed, stay
+        # in initialization mode to avoid false 0→1 transitions on the next poll.
         if hasattr(self, '_initializing_flags') and self._initializing_flags:
-            self._initializing_flags = False
+            expected_count = len(self.custom_flag_to_location) - len(self.checked_locations)
             initialized_count = len(self.previous_custom_flags)
-            # Count how many flags are already set
-            already_set = sum(1 for v in self.previous_custom_flags.values() if v == 1)
-            logger.debug(f"[FlagInit] Initialized {initialized_count} custom flags - now monitoring for changes")
-            logger.debug(f"[FlagInit] {already_set} flags were already set in save file")
+            if initialized_count >= expected_count:
+                self._initializing_flags = False
+                already_set = sum(1 for v in self.previous_custom_flags.values() if v == 1)
+                logger.debug(f"[FlagInit] Initialized {initialized_count} custom flags - now monitoring for changes")
+                logger.debug(f"[FlagInit] {already_set} flags were already set in save file")
+            else:
+                logger.debug(f"[FlagInit] Partial init: {initialized_count}/{expected_count} flags read - staying in init mode")
     
     async def check_beedle_shop_storyflags(self):
         """
