@@ -330,6 +330,76 @@ OFFSET_STAGE_ROOM = 0x22           # Room ID
 OFFSET_STAGE_ENTRANCE = 0x24       # Entrance ID
 OFFSET_STAGE_NIGHT = 0x25          # Night flag
 
+# Bird Statue flag data for HD progression enforcement.
+# Maps each statue name to (flag_type, scene_index_or_0, flag_number).
+# flag_type: "scene" = scene flag in save file, "story" = story flag.
+# When flag_type is "scene", scene_index is the SCENE_NAME_TO_SCENE_INDEX value.
+# The game's HD progression can auto-set these flags from unpatched data table
+# entries; the client clears any that appear without the player being in the
+# corresponding stage/scene.
+BIRD_STATUE_FLAGS = {
+    # Faron region — scene-flag statues
+    "Sealed Grounds Statue":     ("scene", 10, 35),
+    "Behind the Temple Statue":  ("scene", 10, 31),
+    "Deep Woods Statue":         ("scene",  1, 103),
+    "Forest Temple Statue":      ("scene",  1, 104),
+    "Lake Floria Statue":        ("scene",  2, 32),
+    "Floria Waterfall Statue":   ("scene",  2, 33),
+    # Faron region — story-flag statues
+    "Faron Woods Entry Statue":  ("story",  0, 800),
+    "In the Woods Statue":       ("story",  0, 801),
+    "Viewing Platform Statue":   ("story",  0, 802),
+    "The Great Tree Statue":     ("story",  0, 803),
+    # Eldin region — story-flag statues
+    "Volcano Entrance Statue":   ("story",  0, 804),
+    "Volcano East Statue":       ("story",  0, 805),
+    "Volcano Ascent Statue":     ("story",  0, 806),
+    "Temple Entrance Statue":    ("story",  0, 807),
+    # Lanayru region — scene-flag statues
+    "Lanayru Mine Entry Statue": ("scene",  7, 68),
+    "Desert Entrance Statue":    ("scene",  7, 66),
+    "West Desert Statue":        ("scene",  7, 51),
+    "Desert Gorge Statue":       ("scene",  7, 77),
+    "Temple of Time Statue":     ("scene",  7, 78),
+    "North Desert Statue":       ("scene",  7, 67),
+    "Stone Cache Statue":        ("scene",  7, 2),
+    "Ancient Harbour Statue":    ("scene",  8, 10),
+    "Skipper's Retreat Statue":  ("scene",  8, 28),
+    "Shipyard Statue":           ("scene",  8, 85),
+    "Pirate Stronghold Statue":  ("scene",  8, 84),
+    "Lanayru Gorge Statue":      ("scene",  9, 12),
+}
+
+# Map from game stage codes to the scene indices where bird statues live.
+# When the player is in a stage, flags for statues in the corresponding scene
+# index(es) are allowed to be newly set (the player walked near a statue).
+_STAGE_TO_BIRD_STATUE_SCENES: dict[str, set[int]] = {
+    "F401":   {10},       # Sealed Grounds
+    "F400":   {10},       # Behind the Temple area
+    "F100":   {1},        # Faron Woods (scene-flag and story-flag statues)
+    "F101":   {1},        # Deep Woods
+    "F102":   {2},        # Lake Floria
+    "F102_1": {2},        # Floria Waterfall
+    "F103":   {1},        # Flooded Faron Woods (Great Tree statue activatable here)
+    "F200":   set(),      # Eldin Volcano (statues use story flags, handled separately)
+    "F201":   set(),      # Volcano Summit
+    "F201_3": set(),      # Inside the Volcano
+    "D201":   set(),      # Inside the Fire Sanctuary
+    "F300":   {7},        # Lanayru Desert
+    "F300_1": {7},        # Lanayru Mine
+    "F300_4": {7},        # Temple of Time / Desert Gorge area
+    "F301":   {8},        # Lanayru Sand Sea
+    "F301_3": {8},        # Skipper's Retreat
+    "F301_4": {8},        # Shipyard
+    "F301_6": {8},        # Pirate Stronghold
+    "F302":   {9},        # Lanayru Gorge
+}
+
+# Stages where Eldin story-flag statues (804-807) may legitimately activate.
+_ELDIN_STAGES = {"F200", "F201", "F201_3", "F210", "F211", "D201"}
+# Stages where Faron story-flag statues (800-803) may legitimately activate.
+_FARON_STAGES = {"F100", "F101", "F102", "F102_1", "F103", "F401", "F400"}
+
 # Scene name to scene flag base address mapping (base-relative offsets for SSHD)
 # These are the offsets from base_address where scene flags are stored
 # Scene flags are organized by scene in the static scene flag array
@@ -1303,6 +1373,12 @@ class SSHDContext(CommonContext):
         self._ap_check_stats_offset: Optional[int] = None  # Memory offset of AP_CHECK_STATS
         self._ap_item_info_written: bool = False  # Whether we've written the info table
         
+        # Bird statue HD-progression enforcement
+        # Snapshot of legitimate bird statue flags, captured on first game-state poll.
+        # key = statue name, value = True if the statue's activation flag is set.
+        self._bird_statue_snapshot: Optional[Dict[str, bool]] = None
+        self._bird_statue_enforcement_log: Set[str] = set()  # avoid log spam
+        
         # Tracker bridge for autotracking
         self.tracker_bridge = TrackerBridge() if TrackerBridge else None
         if self.tracker_bridge:
@@ -1651,11 +1727,34 @@ class SSHDContext(CommonContext):
             # Received items from other players
             start_index = args.get("index", 0)
             items_list = args.get("items", [])
+
+            # When the server sends a full resync (start_index == 0), reset
+            # progressive counters so they are rebuilt from the authoritative
+            # item list.  This prevents stale counters from a previous
+            # connection from causing wrong tier resolution.
+            if start_index == 0:
+                for key in self.progressive_counts:
+                    self.progressive_counts[key] = 0
+
             for i, network_item in enumerate(items_list):
                 item_global_index = start_index + i
 
-                # Skip items already delivered in a previous session
+                # Skip items already delivered in a previous session,
+                # but still rebuild progressive counters so the next
+                # progressive item resolves to the correct tier.
                 if item_global_index < self.delivered_item_count:
+                    item_id = network_item.item
+                    try:
+                        skipped_name = self.item_names.lookup_in_slot(item_id, self.slot)
+                    except Exception:
+                        skipped_name = None
+                    if skipped_name and skipped_name in self.progressive_counts:
+                        self.progressive_counts[skipped_name] += 1
+                        logger.debug(
+                            f"[ReceivedItems] Rebuilt progressive count for "
+                            f"already-delivered {skipped_name} -> "
+                            f"{self.progressive_counts[skipped_name]}"
+                        )
                     logger.debug(f"[ReceivedItems] Skipping already-delivered item at index {item_global_index}")
                     continue
 
@@ -1950,6 +2049,8 @@ class SSHDContext(CommonContext):
                     if hasattr(self, '_logged_addresses'):
                         del self._logged_addresses
                     self.previous_custom_flags.clear()
+                    self._bird_statue_snapshot = None
+                    self._bird_statue_enforcement_log.clear()
 
                     # Immediately attempt a new base-address scan instead of
                     # waiting for the next cycle (which would spin doing
@@ -2118,6 +2219,11 @@ class SSHDContext(CommonContext):
                 # Supplement: shop purchases don't set custom scene/dungeon flags,
                 # so also check Beedle's sold-out storyflags from the save file.
                 await self.check_beedle_shop_storyflags()
+            
+            # Enforce bird-statue flags: clear any that the game's
+            # HD-progression system auto-unlocked without the player
+            # physically visiting the statue.
+            self._enforce_bird_statue_flags()
             
             # Send any newly checked locations to server (locations not yet sent)
             new_locations = self.checked_locations.difference(self.sent_locations)
@@ -3088,6 +3194,119 @@ class SSHDContext(CommonContext):
             except Exception as e:
                 logger.debug(f"Error checking location {location_name}: {e}")
     
+    # ------------------------------------------------------------------
+    # Bird-statue HD-progression enforcement
+    # ------------------------------------------------------------------
+    def _read_bird_statue_flag(self, flag_type: str, scene_index: int, flag_number: int) -> Optional[bool]:
+        """Read a single bird statue activation flag from the save file.
+        Returns True if set, False if unset, None on read failure."""
+        if flag_type == "scene":
+            upper = (flag_number & 0xF0) >> 4
+            lower = flag_number & 0x0F
+            offset = OFFSET_SAVEFILE_A + OFFSET_FA_SCENEFLAGS + scene_index * 16 + upper * 2
+            val = self.memory.read_short(offset)
+            if val is None:
+                return None
+            return bool(val & (1 << lower))
+        else:  # story
+            word_idx = flag_number // 16
+            bit_idx = flag_number % 16
+            offset = OFFSET_SAVEFILE_A + OFFSET_FA_STORYFLAGS + word_idx * 2
+            val = self.memory.read_short(offset)
+            if val is None:
+                return None
+            return bool(val & (1 << bit_idx))
+
+    def _clear_bird_statue_flag(self, flag_type: str, scene_index: int, flag_number: int) -> bool:
+        """Clear a single bird statue activation flag in the save file.
+        Returns True on success."""
+        if flag_type == "scene":
+            upper = (flag_number & 0xF0) >> 4
+            lower = flag_number & 0x0F
+            offset = OFFSET_SAVEFILE_A + OFFSET_FA_SCENEFLAGS + scene_index * 16 + upper * 2
+            val = self.memory.read_short(offset)
+            if val is None:
+                return False
+            self.memory.write_short(offset, val & ~(1 << lower))
+            return True
+        else:  # story
+            word_idx = flag_number // 16
+            bit_idx = flag_number % 16
+            offset = OFFSET_SAVEFILE_A + OFFSET_FA_STORYFLAGS + word_idx * 2
+            val = self.memory.read_short(offset)
+            if val is None:
+                return False
+            self.memory.write_short(offset, val & ~(1 << bit_idx))
+            return True
+
+    def _enforce_bird_statue_flags(self) -> None:
+        """Prevent the game's HD-progression system from auto-unlocking
+        bird statues the player hasn't physically visited.
+
+        On first call, snapshots the current bird-statue state (which
+        reflects the legitimate startflags).  On subsequent calls, any
+        flag that is newly set while the player is NOT in a stage that
+        contains that statue is cleared from the save file.
+        """
+        if not self.memory.connected or not self.memory.base_address:
+            return
+
+        # Build current state
+        current: Dict[str, bool] = {}
+        for name, (ftype, sidx, fnum) in BIRD_STATUE_FLAGS.items():
+            val = self._read_bird_statue_flag(ftype, sidx, fnum)
+            if val is None:
+                return  # memory read failed — skip this cycle
+            current[name] = val
+
+        # First poll: capture legitimate initial state
+        if self._bird_statue_snapshot is None:
+            self._bird_statue_snapshot = dict(current)
+            enabled = [n for n, v in current.items() if v]
+            if enabled:
+                logger.debug(f"[BirdStatue] Initial snapshot: {', '.join(enabled)}")
+            return
+
+        # Determine which scene-indices and story-flag regions are
+        # "allowed" for new statue activations based on current stage.
+        stage = (self.current_stage or "")[:6]  # e.g. "F300_1" or "F200"
+        # Also try shorter prefix (some stages are "F102_1" etc.)
+        allowed_scenes: set[int] = set()
+        if stage in _STAGE_TO_BIRD_STATUE_SCENES:
+            allowed_scenes = _STAGE_TO_BIRD_STATUE_SCENES[stage]
+        elif stage[:4] in _STAGE_TO_BIRD_STATUE_SCENES:
+            allowed_scenes = _STAGE_TO_BIRD_STATUE_SCENES[stage[:4]]
+
+        in_faron = stage[:4] in {s[:4] for s in _FARON_STAGES}
+        in_eldin = stage[:4] in {s[:4] for s in _ELDIN_STAGES}
+
+        # Check for newly-set flags
+        for name, (ftype, sidx, fnum) in BIRD_STATUE_FLAGS.items():
+            was_set = self._bird_statue_snapshot.get(name, False)
+            is_set = current[name]
+
+            if is_set and not was_set:
+                # Flag was newly activated — decide if it's legitimate.
+                legitimate = False
+                if ftype == "scene" and sidx in allowed_scenes:
+                    legitimate = True
+                elif ftype == "story" and fnum in range(800, 804) and in_faron:
+                    legitimate = True
+                elif ftype == "story" and fnum in range(804, 808) and in_eldin:
+                    legitimate = True
+
+                if legitimate:
+                    self._bird_statue_snapshot[name] = True
+                    if name not in self._bird_statue_enforcement_log:
+                        logger.info(f"[BirdStatue] {name} legitimately activated")
+                        self._bird_statue_enforcement_log.add(name)
+                else:
+                    # HD progression auto-unlock — revert it
+                    if self._clear_bird_statue_flag(ftype, sidx, fnum):
+                        if name not in self._bird_statue_enforcement_log:
+                            logger.info(f"[BirdStatue] Cleared HD-progression auto-unlock: {name}")
+                            self._bird_statue_enforcement_log.add(name)
+
     def build_item_to_location_map(self) -> Dict[int, int]:
         """
         Build a mapping from item codes to location codes.

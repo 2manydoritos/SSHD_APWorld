@@ -490,6 +490,29 @@ def generate_sshd_rando_mod(settings_dict: Dict[str, Any], output_dir: Path, see
         from .setting_string_decoder import decode_setting_string_to_config
         config = decode_setting_string_to_config(setting_string, output_dir, seed)
         
+        # CRITICAL: Apply Archipelago-required overrides to the Setting String config.
+        # The Setting String may have been generated with different settings (e.g.
+        # progressive_items=off) that would break Archipelago's item system. The
+        # overrides in settings_dict (set by _collect_archipelago_settings) must
+        # take precedence.
+        AP_REQUIRED_OVERRIDES = {
+            "progressive_items": "on",
+            "skip_demise": "off",
+            "spawn_hearts": "on",
+        }
+        if hasattr(config, 'settings') and config.settings and len(config.settings) > 0:
+            setting_map_for_overrides = config.settings[0]
+            if hasattr(setting_map_for_overrides, 'settings'):
+                for override_key, override_val in AP_REQUIRED_OVERRIDES.items():
+                    if override_key in setting_map_for_overrides.settings:
+                        setting = setting_map_for_overrides.settings[override_key]
+                        if setting.info and override_val in setting.info.options:
+                            option_index = setting.info.options.index(override_val)
+                            setting.update_current_value(option_index)
+                            print(f"[SSHDRWrapper] Applied AP override to Setting String config: {override_key}={override_val}")
+                        else:
+                            print(f"[SSHDRWrapper] WARNING: Could not apply override {override_key}={override_val} (option not found)")
+        
         # EXTRACT SETTING STRING DECODED STARTING ITEMS (before other settings are applied)
         # These are the items that come directly from the Setting String, not from starting_sword/starting_hearts
         try:

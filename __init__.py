@@ -1088,22 +1088,30 @@ class SSHDWorld(World):
         # When sshd-rando places e.g. "Goddess Longsword" at a location, that's
         # actually a "Progressive Sword" for Archipelago's purposes.
         STAGE_TO_PROGRESSIVE = {
+            "Practice Sword": "Progressive Sword",
             "Goddess Sword": "Progressive Sword",
             "Goddess Longsword": "Progressive Sword",
             "Goddess White Sword": "Progressive Sword",
             "Master Sword": "Progressive Sword",
             "True Master Sword": "Progressive Sword",
+            "Bow": "Progressive Bow",
             "Iron Bow": "Progressive Bow",
             "Sacred Bow": "Progressive Bow",
+            "Beetle": "Progressive Beetle",
             "Hook Beetle": "Progressive Beetle",
             "Quick Beetle": "Progressive Beetle",
             "Tough Beetle": "Progressive Beetle",
+            "Slingshot": "Progressive Slingshot",
             "Scattershot": "Progressive Slingshot",
+            "Digging Mitts": "Progressive Mitts",
             "Mogma Mitts": "Progressive Mitts",
+            "Bug Net": "Progressive Bug Net",
             "Big Bug Net": "Progressive Bug Net",
+            "Medium Wallet": "Progressive Wallet",
             "Big Wallet": "Progressive Wallet",
             "Giant Wallet": "Progressive Wallet",
             "Tycoon Wallet": "Progressive Wallet",
+            "Adventure Pouch": "Progressive Pouch",
             "Pouch Expansion": "Progressive Pouch",
         }
         
@@ -1689,6 +1697,149 @@ class SSHDWorld(World):
                 if triforce_items:
                     print(f"[__init__.py] {len(triforce_items)} Triforce pieces could not be placed, adding to general pool")
                     self.multiworld.itempool.extend(triforce_items)
+        
+        # ── End-of-Dungeon Priority Placement ────────────────────────────
+        # Place important progression items at dungeon completion locations.
+        # Priority order: Triforce pieces > Progressive Swords > other progression.
+        
+        DUNGEON_END_LOCATIONS: dict[str, list[str]] = {
+            "Skyview Temple": [
+                "Skyview Spring - Strike Crest",
+            ],
+            "Earth Temple": [
+                "Earth Spring - Strike Crest",
+            ],
+            "Lanayru Mining Facility": [
+                "Lanayru Mining Facility - Exit Hall of Ancient Robots",
+            ],
+            "Ancient Cistern": [
+                "Ancient Cistern - Farore's Flame",
+            ],
+            "Sandship": [
+                "Sandship - Nayru's Flame",
+            ],
+            "Fire Sanctuary": [
+                "Fire Sanctuary - Din's Flame",
+            ],
+            "Sky Keep": [
+                "Sky Keep - Sacred Power of Din",
+                "Sky Keep - Sacred Power of Nayru",
+                "Sky Keep - Sacred Power of Farore",
+            ],
+        }
+        
+        required_count = self.options.required_dungeon_count.value
+        include_sky_keep = self.options.dungeons_include_sky_keep.value
+        
+        if required_count > 0:
+            main_dungeons = [
+                "Skyview Temple", "Earth Temple", "Lanayru Mining Facility",
+                "Ancient Cistern", "Sandship", "Fire Sanctuary",
+            ]
+            eligible_dungeons = list(main_dungeons)
+            if include_sky_keep:
+                eligible_dungeons.append("Sky Keep")
+            
+            # Randomly select which dungeons are required
+            selected_count = min(required_count, len(eligible_dungeons))
+            self.random.shuffle(eligible_dungeons)
+            selected_dungeons = eligible_dungeons[:selected_count]
+            
+            # Collect unfilled end-of-dungeon locations for the selected dungeons
+            end_loc_names: set[str] = set()
+            for dungeon in selected_dungeons:
+                end_loc_names.update(DUNGEON_END_LOCATIONS.get(dungeon, []))
+            
+            def _get_unfilled_end_locations() -> list:
+                return [
+                    loc for loc in self.multiworld.get_locations(self.player)
+                    if loc.address is not None
+                    and loc.item is None
+                    and loc.name in end_loc_names
+                ]
+            
+            print(f"[__init__.py] pre_fill: End-of-dungeon placement for {selected_count} dungeons: "
+                  f"{selected_dungeons} ({len(_get_unfilled_end_locations())} available end locations)")
+            
+            # Phase 1: Triforce pieces (highest priority)
+            triforce_end_items = _collect_items_from_pool([
+                "Triforce of Courage", "Triforce of Power", "Triforce of Wisdom"
+            ])
+            if triforce_end_items:
+                locs = _get_unfilled_end_locations()
+                self.random.shuffle(locs)
+                try:
+                    fill_restrictive(
+                        self.multiworld,
+                        self.multiworld.get_all_state(False),
+                        locs,
+                        triforce_end_items,
+                        single_player_placement=True,
+                        lock=True,
+                        allow_partial=True,
+                        name="SSHD End-of-Dungeon Triforces",
+                    )
+                except Exception as e:
+                    print(f"[__init__.py] WARNING: fill_restrictive failed for end-of-dungeon triforces: {e}")
+                print(f"[__init__.py] pre_fill: Placed {3 - len(triforce_end_items)}/3 Triforce pieces at dungeon ends")
+                if triforce_end_items:
+                    self.multiworld.itempool.extend(triforce_end_items)
+            
+            # Phase 2: Progressive Swords (second priority)
+            sword_end_items = _collect_items_from_pool(["Progressive Sword"])
+            if sword_end_items:
+                locs = _get_unfilled_end_locations()
+                self.random.shuffle(locs)
+                sword_count = len(sword_end_items)
+                try:
+                    fill_restrictive(
+                        self.multiworld,
+                        self.multiworld.get_all_state(False),
+                        locs,
+                        sword_end_items,
+                        single_player_placement=True,
+                        lock=True,
+                        allow_partial=True,
+                        name="SSHD End-of-Dungeon Swords",
+                    )
+                except Exception as e:
+                    print(f"[__init__.py] WARNING: fill_restrictive failed for end-of-dungeon swords: {e}")
+                print(f"[__init__.py] pre_fill: Placed {sword_count - len(sword_end_items)}/{sword_count} Progressive Swords at dungeon ends")
+                if sword_end_items:
+                    self.multiworld.itempool.extend(sword_end_items)
+            
+            # Phase 3: Other progression items (lowest priority, fill remaining slots)
+            remaining_end_locs = _get_unfilled_end_locations()
+            if remaining_end_locs:
+                other_progression = [
+                    item for item in self.multiworld.itempool
+                    if item.player == self.player and item.classification == IC.progression
+                ]
+                if other_progression:
+                    # Remove from pool temporarily
+                    other_set = set(id(item) for item in other_progression)
+                    self.multiworld.itempool = [
+                        item for item in self.multiworld.itempool
+                        if id(item) not in other_set
+                    ]
+                    self.random.shuffle(remaining_end_locs)
+                    other_count = len(other_progression)
+                    try:
+                        fill_restrictive(
+                            self.multiworld,
+                            self.multiworld.get_all_state(False),
+                            remaining_end_locs,
+                            other_progression,
+                            single_player_placement=True,
+                            lock=True,
+                            allow_partial=True,
+                            name="SSHD End-of-Dungeon Other Progression",
+                        )
+                    except Exception as e:
+                        print(f"[__init__.py] WARNING: fill_restrictive failed for end-of-dungeon other progression: {e}")
+                    print(f"[__init__.py] pre_fill: Placed {other_count - len(other_progression)}/{other_count} other progression items at dungeon ends")
+                    if other_progression:
+                        self.multiworld.itempool.extend(other_progression)
         
         print(f"[__init__.py] pre_fill complete")
 

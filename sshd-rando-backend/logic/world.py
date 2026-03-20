@@ -384,6 +384,9 @@ class World:
                     location in disabled_shuffle_locations
                     and "Goddess Chests" not in location.types
                 )
+                or (
+                    location.name in self.setting_map.excluded_locations
+                )
             ):
                 location.set_current_item(item)
                 location.has_known_vanilla_item = True
