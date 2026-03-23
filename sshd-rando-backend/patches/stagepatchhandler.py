@@ -372,7 +372,7 @@ def patch_ac_key_boko(bzs: dict, itemid: int, object_id_str: str, trapid: int):
     boko["params2"] = mask_shift_set(boko["params2"], 0xFF, 0x0, itemid)
 
 
-def patch_heart_container(bzs: dict, itemid: int, trapid: int):
+def patch_heart_container(bzs: dict, itemid: int, trapid: int, custom_flag: int = 0x3FF):
     heart_container: dict | None = next(
         filter(lambda x: x["name"] == "HeartCo", bzs["OBJ "]), None
     )
@@ -397,6 +397,14 @@ def patch_heart_container(bzs: dict, itemid: int, trapid: int):
         heart_container["params1"], 0xFF, 16, itemid
     )
 
+    # Encode Archipelago custom_flag into params2 bits 18-27 (10 bits)
+    # NOTE: bits 8-17 are occupied by trap/flag data, so custom_flag uses
+    # a higher range.  Requires matching ASM to read from this position.
+    if custom_flag != 0x3FF:
+        heart_container["params2"] = mask_shift_set(
+            heart_container.get("params2", 0xFFFFFFFF), 0x3FF, 18, custom_flag
+        )
+
 
 def patch_chandelier_item(bzs: dict, itemid: int, trapid: int, custom_flag: int = 0x3FF):
     chandelier: dict | None = next(
@@ -419,7 +427,7 @@ def patch_chandelier_item(bzs: dict, itemid: int, trapid: int, custom_flag: int 
         )
 
 
-def patch_tree_of_life(bzs: dict, itemid: int, trapid: int):
+def patch_tree_of_life(bzs: dict, itemid: int, trapid: int, custom_flag: int = 0x3FF):
     tree: dict | None = next(
         filter(lambda x: x["name"] == "FrtTree", bzs["OBJ "]), None
     )
@@ -435,6 +443,14 @@ def patch_tree_of_life(bzs: dict, itemid: int, trapid: int):
     # No need for other checks as params2 is always 0xFFFFFFFF
 
     tree["params1"] = mask_shift_set(tree["params1"], 0xFF, 24, itemid)
+
+    # Encode Archipelago custom_flag into params2 bits 8-17 (10 bits)
+    # The Rust spawn_tree_of_life_item() passes param2 directly to the spawned
+    # dAcItem, so unpack_custom_item_params() will read it at the standard position.
+    if custom_flag != 0x3FF:
+        tree["params2"] = mask_shift_set(
+            tree.get("params2", 0xFFFFFFFF), 0x3FF, 8, custom_flag
+        )
 
 
 def patch_digspot_item(bzs: dict, itemid: int, object_id_str: str, trapid: int):
@@ -1148,6 +1164,7 @@ class StagePatchHandler:
                             room_bzs["LAY "][f"l{layer}"],
                             itemid,
                             trapid,
+                            custom_flag,
                         )
                     elif object_name == "Chandel":
                         patch_chandelier_item(
@@ -1210,6 +1227,7 @@ class StagePatchHandler:
                             room_bzs["LAY "][f"l{layer}"],
                             itemid,
                             trapid,
+                            custom_flag,
                         )
                     elif object_name == "HrpHint":
                         patch_hrphint(

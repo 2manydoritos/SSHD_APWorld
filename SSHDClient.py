@@ -2294,6 +2294,10 @@ class SSHDContext(CommonContext):
                 # so also check Beedle's sold-out storyflags from the save file.
                 await self.check_beedle_shop_storyflags()
             
+            # Boss fight rewards (HeartCo actors) and Demise defeat don't
+            # set custom sceneflags, so monitor their vanilla flags directly.
+            await self.check_boss_defeat_flags()
+            
             # Enforce bird-statue flags: clear any that the game's
             # HD-progression system auto-unlocked without the player
             # physically visiting the statue.
@@ -2311,6 +2315,8 @@ class SSHDContext(CommonContext):
                 self.sent_locations.update(new_locations)
                 
                 # Check if "Defeat Demise" location (2773238) was just checked - this means victory!
+                # Detected either via custom flags (if location exists in AP world)
+                # or via story flag 959 monitoring in check_boss_defeat_flags().
                 DEFEAT_DEMISE_LOCATION = 2773238
                 if DEFEAT_DEMISE_LOCATION in new_locations:
                     logger.info("=== VICTORY! Demise defeated - sending goal completion to server ===")
@@ -3218,6 +3224,91 @@ class SSHDContext(CommonContext):
             logger.debug(f"[BeedleInit] Initialized {len(self._prev_beedle_flags)} Beedle storyflags "
                         f"({already_bought} already purchased)")
     
+    async def check_boss_defeat_flags(self):
+        """
+        Detect boss fight reward collection and Demise defeat via vanilla
+        sceneflags / storyflags in the save file.
+
+        These locations use actors (HeartCo / story-event) that do NOT set
+        the Archipelago custom sceneflag.  Instead we monitor the vanilla
+        flags the game sets on collection / event trigger.
+
+        Also detects the Demise defeat (story flag 959) and sends
+        CLIENT_GOAL so the server can release remaining items.
+        """
+        if not self.memory.connected or not self.memory.base_address:
+            return
+
+        if not hasattr(self, '_boss_flags_initializing'):
+            self._boss_flags_initializing = True
+            self._prev_boss_flags: Dict[int, int] = {}  # location_code -> last_state
+
+        file_a_offset = OFFSET_SAVEFILE_A
+
+        # ── Boss Heart Container vanilla sceneflags ──────────────────────
+        # Tuple: (ap_location_code, scene_index, byte_offset, bit_mask)
+        BOSS_DEFEAT_FLAGS = [
+            (2773700, 11, 0xD, 0x40),   # Skyview Temple - Defeat Boss
+            (2773729, 14, 0x6, 0x01),   # Earth Temple - Defeat Boss
+            (2773774, 17, 0xE, 0x40),   # Lanayru Mining Facility - Defeat Boss
+            (2773798, 12, 0x8, 0x20),   # Ancient Cistern - Defeat Boss
+            (2773818, 18, 0xB, 0x20),   # Sandship - Defeat Boss
+            (2773848, 15, 0xE, 0x10),   # Fire Sanctuary - Defeat Boss
+        ]
+
+        for loc_code, scene_idx, byte_off, mask in BOSS_DEFEAT_FLAGS:
+            if loc_code in self.checked_locations:
+                continue
+            try:
+                addr = file_a_offset + OFFSET_FA_SCENEFLAGS + (scene_idx * 16) + byte_off
+                byte_val = self.memory.read_byte(addr)
+                if byte_val is None:
+                    continue
+                flag_state = 1 if (byte_val & mask) else 0
+                prev = self._prev_boss_flags.get(loc_code, 0)
+
+                if self._boss_flags_initializing:
+                    self._prev_boss_flags[loc_code] = flag_state
+                elif flag_state == 1 and prev == 0:
+                    self.checked_locations.add(loc_code)
+                    logger.info(f"Boss defeat check detected (location {loc_code})")
+                    self._prev_boss_flags[loc_code] = flag_state
+                    self.update_tracker_state()
+                else:
+                    self._prev_boss_flags[loc_code] = flag_state
+            except Exception as e:
+                logger.debug(f"Error reading boss defeat flag for loc {loc_code}: {e}")
+
+        # ── Demise defeat – story flag 959 ───────────────────────────────
+        DEFEAT_DEMISE_CODE = 2773238
+        if DEFEAT_DEMISE_CODE not in self.checked_locations:
+            try:
+                # Story flag 959: byte 119, bit 7 (mask 0x80)
+                sf_addr = file_a_offset + OFFSET_FA_STORYFLAGS + 119
+                byte_val = self.memory.read_byte(sf_addr)
+                if byte_val is not None:
+                    flag_state = 1 if (byte_val & 0x80) else 0
+                    prev = self._prev_boss_flags.get(DEFEAT_DEMISE_CODE, 0)
+
+                    if self._boss_flags_initializing:
+                        self._prev_boss_flags[DEFEAT_DEMISE_CODE] = flag_state
+                    elif flag_state == 1 and prev == 0:
+                        self.checked_locations.add(DEFEAT_DEMISE_CODE)
+                        logger.info("=== Demise defeated (story flag 959) ===")
+                        self._prev_boss_flags[DEFEAT_DEMISE_CODE] = flag_state
+                        self.update_tracker_state()
+                    else:
+                        self._prev_boss_flags[DEFEAT_DEMISE_CODE] = flag_state
+            except Exception as e:
+                logger.debug(f"Error reading Demise story flag: {e}")
+
+        # Clear initialization after first full poll
+        if self._boss_flags_initializing:
+            self._boss_flags_initializing = False
+            already = sum(1 for v in self._prev_boss_flags.values() if v == 1)
+            logger.debug(f"[BossInit] Initialized {len(self._prev_boss_flags)} boss/Demise flags "
+                        f"({already} already set)")
+
     async def check_all_locations(self):
         """Check all locations using LocationFlags.py data (Wii addresses - may not work on Switch)."""
         if not self.memory.connected or not self.memory.base_address:

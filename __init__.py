@@ -906,6 +906,15 @@ class SSHDWorld(World):
         # They have no in-game model and must never be in the AP pool.
         excluded.add("Goddess Cube")
 
+        # "Game Beatable" is the Demise victory pseudo-location.  It must NOT
+        # exist as a real AP location (with an int address) because:
+        #   1. The sshd-rando patcher has no actor to patch for this event.
+        #   2. Placing a fill item there crashes the game during the Demise
+        #      defeat cutscene.
+        # Victory is handled via the "Victory - Game Beatable" event (address=None)
+        # and the client detects the defeat via story flag 959.
+        excluded.add("Game Beatable")
+
         return excluded
 
     def _create_basic_regions(self) -> None:
@@ -1166,13 +1175,28 @@ class SSHDWorld(World):
                                 is_excluded = True
                                 locations_excluded += 1
                         
-                        # Always extract items — even from excluded locations.
-                        # Excluded locations won't have AP Location objects, but
-                        # their items must still enter the pool so progression
-                        # items (e.g. Water Dragon's Scale at Silent Realms)
-                        # aren't lost. create_items handles pool sizing.
+                        # Determine extraction strategy based on exclusion reason:
+                        # - Type-excluded locations (shuffle off) → vanilla items stay
+                        #   in-game; do NOT extract (they'd bloat the AP pool with no
+                        #   matching AP Location objects).
+                        # - Individually excluded locations → may have progression items
+                        #   placed by sshd-rando's fill; DO extract so they aren't lost.
+                        # - Non-excluded locations → always extract.
+                        is_type_excluded = False
+                        if not is_excluded:
+                            pass  # Normal location — always extract
+                        elif loc_name in individually_excluded:
+                            pass  # Individually excluded — extract to save progression items
+                        else:
+                            is_type_excluded = True  # Type-excluded — skip extraction
+                        
                         if hasattr(location, 'current_item') and location.current_item:
                             item_name = location.current_item.name
+                            
+                            # Skip items from type-excluded locations — these are vanilla
+                            # items that remain in-game and should not enter the AP pool.
+                            if is_type_excluded:
+                                continue
                             
                             # Convert generic "Small Key" / "Map" to dungeon-specific AP names
                             if item_name in ("Small Key", "Map"):
@@ -1205,7 +1229,7 @@ class SSHDWorld(World):
                     print(f"[__init__.py] Converted generic items: {_generic_key_converted} Small Keys, {_generic_map_converted} Maps -> dungeon-specific names")
                 
                 if locations_excluded > 0:
-                    print(f"[__init__.py] Excluded {locations_excluded} locations (items still in pool)")
+                    print(f"[__init__.py] Excluded {locations_excluded} locations (type-excluded items skipped, individually-excluded items kept)")
                 
                 if _items_from_excluded:
                     print(f"[__init__.py] Recovered {len(_items_from_excluded)} items from excluded locations into pool")
