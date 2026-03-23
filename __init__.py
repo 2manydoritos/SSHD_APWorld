@@ -1122,6 +1122,27 @@ class SSHDWorld(World):
                 if excluded_loc_types:
                     print(f"[__init__.py] Excluding location types from item pool: {sorted(excluded_loc_types)}")
                 
+                # Build the set of items to skip at type-excluded locations.
+                # Only shuffle-specific items are skipped (tadtones, gratitude
+                # crystals, stamina fruits).  Standard-pool items like Heart
+                # Piece/Container, keys, and progressive items are kept so the
+                # AP pool reflects the full counts.
+                _type_specific_skip_items: set[str] = set()
+                if "Tadtones" in excluded_loc_types:
+                    _type_specific_skip_items.add("Group of Tadtones")
+                if "Gratitude Crystals" in excluded_loc_types:
+                    _type_specific_skip_items.update(["Gratitude Crystal", "Gratitude Crystal Pack"])
+                if "Stamina Fruits" in excluded_loc_types:
+                    _type_specific_skip_items.add("Stamina Fruit")
+                # Goddess Cube items are always dummy logic items — skip them
+                # to avoid pool bloat (they're also filtered by SKIP_GODDESS_CUBES
+                # in create_items, but skipping here prevents excess trimming).
+                _type_specific_skip_items.update(
+                    name for name in ITEM_TABLE if "Goddess Cube" in name
+                )
+                if _type_specific_skip_items:
+                    print(f"[__init__.py] Will skip shuffle-specific items at excluded locations: {sorted(_type_specific_skip_items)}")
+                
                 # Individually excluded locations from config.yaml — items at
                 # these locations must NOT enter the AP pool because the AP world
                 # will not have corresponding Location objects for them.
@@ -1177,8 +1198,10 @@ class SSHDWorld(World):
                         
                         # Determine extraction strategy based on exclusion reason:
                         # - Type-excluded locations (shuffle off) → vanilla items stay
-                        #   in-game; do NOT extract (they'd bloat the AP pool with no
-                        #   matching AP Location objects).
+                        #   in-game; skip ONLY the shuffle-specific items (tadtones,
+                        #   gratitude crystals, stamina fruits) to avoid bloat.  Keep
+                        #   standard-pool items (Heart Piece, Heart Container, keys, etc.)
+                        #   so the AP pool has the correct counts for those items.
                         # - Individually excluded locations → may have progression items
                         #   placed by sshd-rando's fill; DO extract so they aren't lost.
                         # - Non-excluded locations → always extract.
@@ -1188,14 +1211,19 @@ class SSHDWorld(World):
                         elif loc_name in individually_excluded:
                             pass  # Individually excluded — extract to save progression items
                         else:
-                            is_type_excluded = True  # Type-excluded — skip extraction
+                            is_type_excluded = True  # Type-excluded — selective skip
                         
                         if hasattr(location, 'current_item') and location.current_item:
                             item_name = location.current_item.name
                             
-                            # Skip items from type-excluded locations — these are vanilla
-                            # items that remain in-game and should not enter the AP pool.
-                            if is_type_excluded:
+                            # For type-excluded locations, only skip items that are the
+                            # "shuffle-specific" vanilla items for that location type.
+                            # Standard-pool items (HPs, HCs, progressive items, etc.)
+                            # must stay in the AP pool so the player can obtain them all
+                            # through Archipelago.  Any resulting excess is handled by
+                            # the trimming logic in create_items() which drops filler
+                            # items first.
+                            if is_type_excluded and item_name in _type_specific_skip_items:
                                 continue
                             
                             # Convert generic "Small Key" / "Map" to dungeon-specific AP names
