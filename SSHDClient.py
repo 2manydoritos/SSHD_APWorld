@@ -3732,7 +3732,7 @@ async def main(args=None):
     
     print("="*60)
     print("Skyward Sword HD Archipelago Client")
-    print("  Build: [BETA] 0.7.1")
+    print("  Build: [BETA] 0.7.2")
     print("="*60)
     print(f"Starting client...")
     print(f"Arguments: {args}")
