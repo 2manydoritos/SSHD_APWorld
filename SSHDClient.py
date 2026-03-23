@@ -2339,6 +2339,19 @@ class SSHDContext(CommonContext):
         if not self.memory.connected or not self.memory.base_address:
             return
 
+        # Guard: skip all cheat writes during scene transitions / loading
+        # screens.  The game tears down and rebuilds player/save structures
+        # during loads; writing to those offsets mid-transition can corrupt
+        # game memory and crash the emulator.
+        try:
+            stage = self.memory.read_string(
+                OFFSET_CURRENT_STAGE + OFFSET_STAGE_NAME, 8
+            )
+            if not stage:
+                return
+        except Exception:
+            return
+
         player_base = OFFSET_PLAYER
         any_cheat = (
             self.cheat_infinite_health or self.cheat_infinite_stamina or
