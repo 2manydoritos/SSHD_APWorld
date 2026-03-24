@@ -270,7 +270,10 @@ def patch_dusk_relic(
     freestanding_item["params1"] = params1
 
 
-def patch_bucha(bzs: dict, itemid: int, object_id_str: str, trapid: int):
+def patch_bucha(
+    bzs: dict, itemid: int, object_id_str: str, trapid: int,
+    custom_flag: int = 0x3FF,
+):
     id = int(object_id_str, 16)
     bucha: dict | None = next(
         filter(lambda x: x["name"] == "NpcKyuE" and x["id"] == id, bzs["OBJ "]), None
@@ -289,6 +292,12 @@ def patch_bucha(bzs: dict, itemid: int, object_id_str: str, trapid: int):
         bucha["params2"] = mask_shift_set(bucha["params2"], 0xF, 4, 0xF)
 
     bucha["params2"] = mask_shift_set(bucha["params2"], 0xFF, 0x8, itemid)
+
+    # Encode Archipelago custom_flag into params2 bits 18-27 (10 bits)
+    # NOTE: bits 8-15 are occupied by itemid, so custom_flag uses
+    # a higher range.  Requires matching ASM to read from this position.
+    if custom_flag != 0x3FF:
+        bucha["params2"] = mask_shift_set(bucha["params2"], 0x3FF, 18, custom_flag)
 
 
 def patch_closet(
@@ -1159,6 +1168,7 @@ class StagePatchHandler:
                             itemid,
                             objectid,
                             trapid,
+                            custom_flag,
                         )
                     elif object_name == "chest":
                         patch_closet(

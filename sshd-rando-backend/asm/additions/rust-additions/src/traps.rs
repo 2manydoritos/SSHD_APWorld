@@ -392,6 +392,15 @@ pub extern "C" fn handle_bucha_traps() {
         ACTORBASE_PARAM2 &= 0xFFFFFF0F;
         ACTORBASE_PARAM2 |= trapid << 4;
 
+        // Propagate Archipelago custom_flag from Bucha params2 bits 18-27 (10 bits)
+        // to NEXT_CUSTOM_FLAG so spawned_actor_traps() encodes it into the
+        // spawned item actor's param2.
+        let custom_flag = ((*bucha).members.base.param2 >> 18) & 0x3FF;
+        if custom_flag != 0x3FF {
+            NEXT_CUSTOM_FLAG = custom_flag as u16;
+            NEXT_CUSTOM_FLAG_PENDING = 1;
+        }
+
         // Replaced instructions
         asm!("ldr x8, [x19]", "mov x0, x19");
     }
