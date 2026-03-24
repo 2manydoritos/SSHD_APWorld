@@ -1691,6 +1691,15 @@ pub extern "C" fn give_tadtone_random_item(tadtone_actor: *const actor::dAcOClef
         let tadtone_group_index: u8 =
             ((((*tadtone_actor).base.basebase.members.param1 >> 3) & 0x1F) - 1) as u8;
 
+        // Read Archipelago custom_flag from Clef actor's params2 bits 8-17 (10 bits)
+        // and set NEXT_CUSTOM_FLAG so spawned_actor_traps() propagates it
+        // to the spawned item actor's params2
+        let custom_flag = ((*tadtone_actor).base.members.base.param2 >> 8) & 0x3FF;
+        if custom_flag != 0x3FF {
+            NEXT_CUSTOM_FLAG = custom_flag as u16;
+            NEXT_CUSTOM_FLAG_PENDING = 1;
+        }
+
         give_item_with_sceneflag(
             itemid as u8,
             TADTONE_SCENEFLAGS[tadtone_group_index as usize],

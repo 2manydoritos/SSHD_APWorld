@@ -548,7 +548,7 @@ def patch_squirrels(bzs: dict, itemid: int, object_id_str: str, trapid: int):
     )
 
 
-def patch_tadtone_group(bzs: dict, itemid: int, groupid_str: str, trapid: int):
+def patch_tadtone_group(bzs: dict, itemid: int, groupid_str: str, trapid: int, custom_flag: int = 0x3FF):
     groupid = int(groupid_str, 0)
     clefs = filter(
         lambda x: x["name"] == "Clef" and ((x["params1"] >> 3) & 0x1F) == groupid,
@@ -561,6 +561,12 @@ def patch_tadtone_group(bzs: dict, itemid: int, groupid_str: str, trapid: int):
 
     for clef in clefs:
         clef["anglez"] = mask_shift_set(clef["anglez"], 0xFFFF, 0, itemid)
+
+        # Encode Archipelago custom_flag into params2 bits 8-17 (10 bits)
+        if custom_flag != 0x3FF:
+            clef["params2"] = mask_shift_set(
+                clef.get("params2", 0xFFFFFFFF), 0x3FF, 8, custom_flag
+            )
 
 
 def patch_trial_gate(bzs: dict, itemid: int, trapid: int):
@@ -1250,6 +1256,7 @@ class StagePatchHandler:
                             itemid,
                             objectid,
                             trapid,
+                            custom_flag,
                         )
                     elif object_name == "FrtTree":
                         patch_tree_of_life(
