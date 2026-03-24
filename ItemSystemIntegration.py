@@ -60,6 +60,15 @@ class GameOffsets:
     FA_ITEMFLAGS = SAVEFILE_A + 0x9E4  # committed itemflags [u16; 64]
     STATIC_ITEMFLAGS = 0x182E170       # uncommitted/working copy [u16; 64]
 
+    # FlagMgr pointer-chasing offsets (from flag.rs / symbols.yaml).
+    # ITEMFLAG_MGR is a *mut FlagMgr stored 8 bytes before STATIC_ITEMFLAGS.
+    ITEMFLAG_MGR = STATIC_ITEMFLAGS - 8  # 0x182E168
+    # FlagMgr struct layout: {funcs: 8, flag_size: 4, another_size: 4, flags_ptr: 8}
+    FLAGMGR_FLAGS_PTR_OFFSET = 16  # offset of *mut FlagSpace within FlagMgr
+    # FlagSpace struct layout: {flag_ptr: 8, static_flag_ptr: 8, flag_space_size: 2, pad: 6}
+    FLAGSPACE_FLAG_PTR_OFFSET = 0   # committed/active flag data pointer
+    FLAGSPACE_STATIC_PTR_OFFSET = 8  # working-copy (STATIC_ITEMFLAGS) pointer
+
 
 # Player actions that indicate the player is "busy" and must NOT be given
 # a new item.  Values match the PLAYER_ACTIONS enum in player.rs.
@@ -157,6 +166,13 @@ class GameItemSystem:
         # (game set the itemflag after processing).  Skips the 250ms post-
         # delivery verification delay for subsequent items.
         self._buffer_verified: bool = False
+
+        # FlagMgr pointer-chase state.
+        # After discovering the committed flag data location once, we cache
+        # the host offset so _ensure_itemflag_set can write there directly.
+        self._guest_to_host_delta: Optional[int] = None
+        self._committed_flag_offset: Optional[int] = None  # host offset of committed flag data
+        self._flagmgr_discovery_failed: bool = False
         
     def _score_buffer_candidate(self, offset: int, magic_signature: bytes,
                                 cs_addresses: list) -> tuple:
@@ -758,6 +774,142 @@ class GameItemSystem:
     
     # ---- Direct item-flag reading and writing (guaranteed delivery) --------
 
+    def _discover_committed_flags(self) -> bool:
+        """Discover the FlagMgr's committed flag data by chasing pointers.
+
+        The game's ``determineFinalItemid`` reads item flags through
+        ``get_flag_or_counter`` which uses the *committed* flag copy inside
+        FlagMgr.  This is NOT the same as STATIC_ITEMFLAGS (the
+        uncommitted/working copy).
+
+        Pointer chain:
+          ITEMFLAG_MGR (host offset) → FlagMgr guest ptr
+            → FlagMgr.flags_ptr → FlagSpace guest ptr
+              → FlagSpace.flag_ptr       → committed flag data (target)
+              → FlagSpace.static_flag_ptr → STATIC_ITEMFLAGS (validation)
+
+        The guest→host conversion delta is calibrated dynamically by
+        comparing ``FlagSpace.static_flag_ptr`` (a guest address) against
+        the known host offset of STATIC_ITEMFLAGS.
+
+        Returns True if the committed flag data location was resolved.
+        """
+        if self._flagmgr_discovery_failed:
+            return False
+        if self._committed_flag_offset is not None:
+            return True  # already discovered
+
+        if not self.memory or not self.memory.connected:
+            return False
+
+        # Step 1: Read the ITEMFLAG_MGR pointer (guest address of FlagMgr).
+        flagmgr_guest = self.memory.read_pointer(GameOffsets.ITEMFLAG_MGR)
+        if not flagmgr_guest or flagmgr_guest < 0x7100000000:
+            logger.debug("[FlagMgr] ITEMFLAG_MGR pointer is null or invalid")
+            return False
+
+        # Step 2: Try candidate guest→host deltas.
+        #   0x7100004000 — typical for BSS/data-segment globals
+        #   0x7100000000 — typical for heap/manager pointers
+        for delta in [0x7100004000, 0x7100000000, 0x7100008000, 0x7100002000]:
+            flagmgr_host = flagmgr_guest - delta
+            if flagmgr_host < 0 or flagmgr_host > 0xFFFFFFFF:
+                continue
+
+            try:
+                # Read FlagMgr.funcs — should be a valid guest vtable ptr
+                funcs_guest = self.memory.read_pointer(flagmgr_host)
+                if not funcs_guest or funcs_guest < 0x7100000000:
+                    continue
+
+                # Read FlagMgr.flags_ptr at offset 16
+                flagspace_guest = self.memory.read_pointer(
+                    flagmgr_host + GameOffsets.FLAGMGR_FLAGS_PTR_OFFSET
+                )
+                if not flagspace_guest or flagspace_guest < 0x7100000000:
+                    continue
+
+                flagspace_host = flagspace_guest - delta
+                if flagspace_host < 0 or flagspace_host > 0xFFFFFFFF:
+                    continue
+
+                # Read FlagSpace.static_flag_ptr at offset 8 (validation)
+                static_ptr_guest = self.memory.read_pointer(
+                    flagspace_host + GameOffsets.FLAGSPACE_STATIC_PTR_OFFSET
+                )
+                if not static_ptr_guest:
+                    continue
+
+                # Validate: static_flag_ptr - delta should equal our known
+                # STATIC_ITEMFLAGS host offset.
+                if (static_ptr_guest - delta) != GameOffsets.STATIC_ITEMFLAGS:
+                    continue
+
+                # Validation passed — delta is correct!
+                # Now read FlagSpace.flag_ptr (committed flag data pointer).
+                flag_ptr_guest = self.memory.read_pointer(
+                    flagspace_host + GameOffsets.FLAGSPACE_FLAG_PTR_OFFSET
+                )
+                if not flag_ptr_guest or flag_ptr_guest < 0x7100000000:
+                    # flag_ptr might be 0 if not yet initialized (title screen)
+                    logger.debug(
+                        "[FlagMgr] Delta 0x%X validated but flag_ptr is null "
+                        "(game may not be loaded yet)", delta
+                    )
+                    return False
+
+                committed_host = flag_ptr_guest - delta
+                if committed_host < 0 or committed_host > 0xFFFFFFFF:
+                    continue
+
+                # Sanity check: committed flags should NOT be the same as
+                # STATIC_ITEMFLAGS (otherwise there's no point).
+                if committed_host == GameOffsets.STATIC_ITEMFLAGS:
+                    logger.info(
+                        "[FlagMgr] Committed flags == STATIC_ITEMFLAGS "
+                        "(flag_ptr == static_flag_ptr); single-copy mode"
+                    )
+                    # Still usable — just means the game uses one copy.
+                    # Writing to STATIC_ITEMFLAGS is sufficient.
+                    self._guest_to_host_delta = delta
+                    self._committed_flag_offset = committed_host
+                    return True
+
+                # Verify we can read from the committed flag area.
+                test = self.memory.read_short(committed_host)
+                if test is None:
+                    logger.warning(
+                        "[FlagMgr] Cannot read committed flags at host "
+                        "offset 0x%X", committed_host
+                    )
+                    continue
+
+                self._guest_to_host_delta = delta
+                self._committed_flag_offset = committed_host
+                logger.info(
+                    "[FlagMgr] Pointer chain resolved: delta=0x%X, "
+                    "FlagMgr@0x%X, FlagSpace@0x%X, committed_flags=0x%X "
+                    "(host 0x%X), static_flags=0x%X",
+                    delta, flagmgr_guest, flagspace_guest,
+                    flag_ptr_guest, committed_host,
+                    static_ptr_guest,
+                )
+                return True
+
+            except Exception as exc:
+                logger.debug(
+                    "[FlagMgr] Delta 0x%X failed: %s", delta, exc
+                )
+                continue
+
+        logger.warning(
+            "[FlagMgr] Could not resolve pointer chain (FlagMgr@0x%X). "
+            "Committed flag writes will be skipped.",
+            flagmgr_guest,
+        )
+        self._flagmgr_discovery_failed = True
+        return False
+
     def _check_itemflag(self, item_id: int) -> bool:
         """Read-only check: is the itemflag for this item currently set?
 
@@ -792,20 +944,20 @@ class GameItemSystem:
 
         In SSHD the item-flag index equals the game item ID, so no
         separate mapping table is needed.  The flag is a single bit inside
-        the ``itemflags [u16; 64]`` bitfield array.  We write to BOTH the
-        committed (SaveFile FA) and uncommitted (static working) copies so
-        the change is immediately visible to the running game *and*
-        survives a save.
+        the ``itemflags [u16; 64]`` bitfield array.  We write to THREE
+        flag copies:
 
-        This is called after every buffer delivery attempt as a safety net.
-        If the Rust actor spawn succeeded, the game has already set the
-        flag and this is a harmless no-op.  If the spawn failed silently,
-        this ensures the item still reaches the player.
+        1. **FA_ITEMFLAGS** (SaveFile) — survives game saves.
+        2. **STATIC_ITEMFLAGS** (uncommitted) — the working copy that
+           ``set_flag`` writes to; committed on scene transitions.
+        3. **Committed flag data** (via FlagMgr pointer chain) — the copy
+           that ``get_flag_or_counter`` / ``determineFinalItemid`` reads.
+           Discovered dynamically by ``_discover_committed_flags()``.
 
-        Note: for counter-based items (rupees, ammo, materials) this only
-        sets the "has collected at least one" flag bit and does NOT
-        increment the actual quantity counter.  Equipment, key items,
-        songs, and similar single-acquisition items are fully covered.
+        Writing to all three guarantees that:
+        - The flag persists across saves (FA).
+        - The next ``do_commit`` preserves it (STATIC).
+        - ``determineFinalItemid`` sees it *immediately* (committed).
 
         Returns True if the flag is confirmed set after the operation.
         """
@@ -825,7 +977,15 @@ class GameItemSystem:
         mask = 1 << bit_idx
 
         confirmed = False
-        bases = (GameOffsets.FA_ITEMFLAGS, GameOffsets.STATIC_ITEMFLAGS)
+
+        # Build the list of flag copy bases to write to.
+        bases = [GameOffsets.FA_ITEMFLAGS, GameOffsets.STATIC_ITEMFLAGS]
+
+        # Try to discover the FlagMgr committed flag data (lazy, cached).
+        self._discover_committed_flags()
+        if self._committed_flag_offset is not None:
+            bases.append(self._committed_flag_offset)
+
         for base in bases:
             try:
                 current = self.memory.read_short(base + byte_off)
@@ -841,10 +1001,13 @@ class GameItemSystem:
                     # Read back to verify the write stuck
                     verify = self.memory.read_short(base + byte_off)
                     if verify is not None and (verify & mask):
+                        label = "committed" if base == self._committed_flag_offset else (
+                            "FA" if base == GameOffsets.FA_ITEMFLAGS else "STATIC"
+                        )
                         logger.info(
                             f"[DirectFlag] Set itemflag {flag_id} "
-                            f"(word {word_idx}, bit {bit_idx}) at base 0x{base:x} "
-                            f"[verified]"
+                            f"(word {word_idx}, bit {bit_idx}) at {label} "
+                            f"0x{base:x} [verified]"
                         )
                         confirmed = True
                     else:
@@ -863,7 +1026,7 @@ class GameItemSystem:
         return confirmed
 
     def _clear_itemflag(self, item_id: int) -> bool:
-        """Clear (unset) the itemflag for the given item in both flag copies.
+        """Clear (unset) the itemflag for the given item in all flag copies.
 
         Mirrors _ensure_itemflag_set but ANDs with ~mask instead of ORing.
         Used to clean up stale progressive flags before re-presetting the
@@ -881,7 +1044,10 @@ class GameItemSystem:
         mask = 1 << bit_idx
 
         cleared = False
-        bases = (GameOffsets.FA_ITEMFLAGS, GameOffsets.STATIC_ITEMFLAGS)
+        bases = [GameOffsets.FA_ITEMFLAGS, GameOffsets.STATIC_ITEMFLAGS]
+        self._discover_committed_flags()
+        if self._committed_flag_offset is not None:
+            bases.append(self._committed_flag_offset)
         for base in bases:
             try:
                 current = self.memory.read_short(base + byte_off)

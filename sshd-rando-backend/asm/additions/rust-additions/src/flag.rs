@@ -492,6 +492,15 @@ pub fn set_itemflag_raw(flag_id: u16) {
     }
 }
 
+/// Commit all uncommitted itemflags so get_flag_or_counter sees them
+/// immediately.  Called after set_itemflag_raw in the buffer handler
+/// because set_flag only writes to the uncommitted copy.
+pub fn commit_itemflags() {
+    unsafe {
+        ((*(*ITEMFLAG_MGR).funcs).do_commit)(ITEMFLAG_MGR);
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn set_itemflag(flag: ITEMFLAGS) {
     unsafe {

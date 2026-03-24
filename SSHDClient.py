@@ -213,8 +213,8 @@ OFFSET_DUNGEON_FLAGS_STATIC = 0x182E128 # Static dungeon flags (16 bytes)
 OFFSET_SAVEFILE_A = 0x5AEAD54  # Direct offset to FA (SaveFile structure) - from CT: base+0x5AEAD44+0x10
 # SaveFile structure offsets (from cheat table actual addresses)
 OFFSET_FA_STORYFLAGS = 0x8E4            # Story flags in save file (CT: 0x307126AF638 - FA@0x307126AED54 = 0x8E4)
-OFFSET_FA_ITEMFLAGS = 0xA64            # Item flags (CT shows at base+5AEF7B8-5AEAD54)  
-OFFSET_FA_DUNGEONFLAGS = 0xA64         # Dungeon flags (CT shows at base+5AEF7B8-5AEAD54)
+OFFSET_FA_ITEMFLAGS = 0x9E4            # Item flags [u16; 64] (savefile.rs: storyflags@0x8E4 + 0x100 = 0x9E4)
+OFFSET_FA_DUNGEONFLAGS = 0xA64         # Dungeon flags [[u16;8];26] (savefile.rs: itemflags@0x9E4 + 0x80 = 0xA64)
 # CORRECTED: Diagnostic scan showed actual sceneflags 0x800 bytes before expected!
 # Scan found flag change at base+0x5AEC7B8 vs expected base+0x5AECFB8
 OFFSET_FA_SCENEFLAGS = 0x1A64          # CORRECTED from 0x2264: actual offset is 0x2264 - 0x800 = 0x1A64
@@ -2068,9 +2068,13 @@ class SSHDContext(CommonContext):
             return False
 
     def _process_deferred_flag_writes(self):
-        """No-op.  Flag management is now handled entirely by the game's
-        own item actor stateGet through the FlagMgr vtable.  Python-side
-        writes to STATIC_ITEMFLAGS do not affect determineFinalItemid."""
+        """Maintained for API compatibility.  Item flag management is now
+        handled by two mechanisms:
+        1. Rust: flag::set_itemflag_raw() in archipelago_check_item_buffer()
+        2. Python: _ensure_itemflag_set() called after every progressive
+           item (local or remote) to keep FA_ITEMFLAGS + STATIC_ITEMFLAGS
+           in sync as a safety net.
+        """
         pass
 
     async def ryujinx_connection_task(self):
@@ -2244,6 +2248,16 @@ class SSHDContext(CommonContext):
                             f"[LocalItem] Tracked {item_name} progressive "
                             f"count -> {self.progressive_counts[item_name]}"
                         )
+                        # Write item flags for all received tiers as insurance.
+                        # The game's stateGet should have set them natively,
+                        # but if a prior REMOTE progressive was delivered via
+                        # buffer and didn't set FlagMgr flags, this keeps the
+                        # save file + static flags in sync so the next
+                        # determineFinalItemid call in-game sees all tiers.
+                        tier_ids = self._PROGRESSIVE_TIER_FLAGS.get(item_name)
+                        if tier_ids and self.game_item_system:
+                            for t in range(min(self.progressive_counts[item_name], len(tier_ids))):
+                                self.game_item_system._ensure_itemflag_set(tier_ids[t])
                     location_name = item_data.get("location", "unknown location")
                     logger.info(f"[LocalItem] {item_name} ({location_name}) - already given by game, skipped buffer")
                     self.item_queue.pop(0)

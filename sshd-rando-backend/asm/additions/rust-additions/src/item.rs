@@ -2080,6 +2080,18 @@ pub extern "C" fn archipelago_check_item_buffer() {
                 (*item_actor).prevent_timed_despawn = 1;
                 (*item_actor).no_longer_waiting = 1;
 
+                // Explicitly set the item flag through the game's FlagMgr
+                // vtable so determineFinalItemid sees it immediately for
+                // progressive item resolution.  Buffer-spawned actors may
+                // not reliably set flags through the normal stateGet flow.
+                // We also commit immediately because set_flag only writes
+                // to the uncommitted copy, and get_flag_or_counter reads
+                // the committed copy.
+                if spawn_id <= 215 {
+                    flag::set_itemflag_raw(spawn_id as u16);
+                    flag::commit_itemflags();
+                }
+
                 // Spawn succeeded — clear the buffer slot and reset retries.
                 core::ptr::write_volatile(core::ptr::addr_of_mut!((*slot_ptr).item_id), 0u8);
                 core::ptr::write_volatile(core::ptr::addr_of_mut!((*slot_ptr).flags), 0u8);
