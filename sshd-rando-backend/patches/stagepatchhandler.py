@@ -480,7 +480,7 @@ def patch_digspot_item(bzs: dict, itemid: int, object_id_str: str, trapid: int):
     digspot["params2"] = mask_shift_set(digspot["params2"], 0xFF, 0x18, itemid)
 
 
-def patch_goddess_crest(bzs: dict, itemid: int, index: str, trapid: int):
+def patch_goddess_crest(bzs: dict, itemid: int, index: str, trapid: int, custom_flag: int = 0x3FF):
     crest: dict | None = next(filter(lambda x: x["name"] == "SwSB", bzs["OBJ "]), None)
 
     if crest is None:
@@ -491,12 +491,26 @@ def patch_goddess_crest(bzs: dict, itemid: int, index: str, trapid: int):
         itemid = 34  # rupoor
 
     # 3 items patched into same object at different points in the params
+    # Item IDs: params1[24:31], params1[16:23], params2[24:31]
+    # Custom flags (10 bits each): params1[0:9], params2[0:9], params2[10:19]
     if index == "0":
         crest["params1"] = mask_shift_set(crest["params1"], 0xFF, 0x18, itemid)
+        if custom_flag != 0x3FF:
+            crest["params1"] = mask_shift_set(crest["params1"], 0x3FF, 0, custom_flag)
     elif index == "1":
         crest["params1"] = mask_shift_set(crest["params1"], 0xFF, 0x10, itemid)
+        if custom_flag != 0x3FF:
+            crest["params2"] = mask_shift_set(
+                crest.get("params2", 0xFFFFFFFF), 0x3FF, 0, custom_flag
+            )
     elif index == "2":
-        crest["params2"] = mask_shift_set(crest["params2"], 0xFF, 0x18, itemid)
+        crest["params2"] = mask_shift_set(
+            crest.get("params2", 0xFFFFFFFF), 0xFF, 0x18, itemid
+        )
+        if custom_flag != 0x3FF:
+            crest["params2"] = mask_shift_set(
+                crest.get("params2", 0xFFFFFFFF), 0x3FF, 10, custom_flag
+            )
 
 
 def patch_squirrels(bzs: dict, itemid: int, object_id_str: str, trapid: int):
@@ -1044,12 +1058,16 @@ class StagePatchHandler:
                 room_bzs_bytes = room_bzs_path.read_bytes()
                 room_bzs = parse_bzs(room_bzs_bytes)
 
-                # Inject all AP item OARCs into layer 0 (always active) so
-                # they load synchronously during stage transitions.
-                l0 = room_bzs["LAY "]["l0"]
-                l0_arcn = set(l0.get("ARCN", []))
-                l0_arcn |= AP_ITEM_OARC_NAMES
-                l0["ARCN"] = list(l0_arcn)
+                # Only inject AP item OARCs when the room has randomized
+                # checks or object patches that may spawn AP item actors.
+                # Boss arenas like B400 (Demise) have zero patches and the
+                # extra ~80 OARCs overwhelm the game's resource loader,
+                # causing a PANIC on the SSystem::mDvd thread.
+                if check_patches_for_current_room or obj_patches_for_current_room:
+                    l0 = room_bzs["LAY "]["l0"]
+                    l0_arcn = set(l0.get("ARCN", []))
+                    l0_arcn |= AP_ITEM_OARC_NAMES
+                    l0["ARCN"] = list(l0_arcn)
 
                 nextid = get_highest_object_id(bzs=room_bzs) + 1
 
@@ -1186,6 +1204,7 @@ class StagePatchHandler:
                             itemid,
                             objectid,
                             trapid,
+                            custom_flag,
                         )
                     elif object_name == "MssbTag":
                         patch_squirrels(

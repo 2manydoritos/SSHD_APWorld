@@ -2042,6 +2042,19 @@ class SSHDContext(CommonContext):
                     # so retries don't skip tiers.
                     if is_progressive:
                         self.progressive_counts[item_name] = next_count
+                        
+                        # Also set item flags in the save file for all tiers up
+                        # to and including the current one.  Buffer-spawned items
+                        # update FlagMgr asynchronously (via stateGet), but writing
+                        # to FA_ITEMFLAGS + STATIC_ITEMFLAGS immediately keeps the
+                        # save file authoritative.  On save/reload the game
+                        # re-initialises FlagMgr from the save, ensuring
+                        # determineFinalItemid sees the correct flags even after
+                        # a session restart.
+                        tier_ids = self._PROGRESSIVE_TIER_FLAGS.get(item_name)
+                        if tier_ids and self.game_item_system:
+                            for t in range(min(next_count, len(tier_ids))):
+                                self.game_item_system._ensure_itemflag_set(tier_ids[t])
                     
                     logger.debug(f"Gave {actual_item_name} via item buffer (game will handle animation)")
                 else:
@@ -2214,6 +2227,25 @@ class SSHDContext(CommonContext):
                         self.progressive_counts[item_name] += 1
                         logger.debug(f"[StartInventory] Tracked {item_name} progressive count -> {self.progressive_counts[item_name]}")
                     logger.debug(f"[StartInventory] Skipped in-game delivery of {item_name} (already in save from patches)")
+                    self.item_queue.pop(0)
+                    self.delivered_item_count += 1
+                    self.save_progress()
+                    self.update_tracker_state()
+                elif item_data.get("location_player") == self.slot:
+                    # LOCAL item: the game already gave this natively when the
+                    # player checked the location (patched ROM actor).  Do NOT
+                    # re-deliver via buffer — that would cause a duplicate and,
+                    # for progressive items, potentially the wrong tier.
+                    # Just advance the progressive counter and bookkeeping.
+                    item_name = item_data["name"]
+                    if item_name in self.progressive_counts:
+                        self.progressive_counts[item_name] += 1
+                        logger.debug(
+                            f"[LocalItem] Tracked {item_name} progressive "
+                            f"count -> {self.progressive_counts[item_name]}"
+                        )
+                    location_name = item_data.get("location", "unknown location")
+                    logger.info(f"[LocalItem] {item_name} ({location_name}) - already given by game, skipped buffer")
                     self.item_queue.pop(0)
                     self.delivered_item_count += 1
                     self.save_progress()
@@ -3017,10 +3049,17 @@ class SSHDContext(CommonContext):
                     
                     # Only check locations if we're NOT initializing (to prevent false positives)
                     if hasattr(self, '_initializing_flags') and self._initializing_flags:
-                        # First poll: just record current state, don't check locations
+                        # First poll: record current state
                         self.previous_custom_flags[flag_id] = flag_state
-                        # Log initialization of already-set flags
-                        if flag_state == 1 and len(self.previous_custom_flags) < 20:
+                        # If a flag is already set but the location was never sent
+                        # to the server, the check was completed while the client
+                        # was disconnected.  Detect it now so it gets sent.
+                        if flag_state == 1 and location_code not in self.sent_locations:
+                            self.checked_locations.add(location_code)
+                            location_name = self.location_names.lookup_in_slot(location_code, self.slot)
+                            logger.info(f"[Init] Recovered unsent check: {location_name}")
+                            self.update_tracker_state()
+                        elif flag_state == 1 and len(self.previous_custom_flags) < 20:
                             location_name = self.location_names.lookup_in_slot(location_code, self.slot)
                             logger.debug(f"[Init] Capturing already-set flag: {location_name} (scene={sceneindex}, flag={lower_flag})")
                     elif flag_state == 1 and previous_state == 0:
@@ -3264,19 +3303,18 @@ class SSHDContext(CommonContext):
         Detect boss fight reward collection and Demise defeat via vanilla
         sceneflags / storyflags in the save file.
 
-        These locations use actors (HeartCo / story-event) that do NOT set
-        the Archipelago custom sceneflag.  Instead we monitor the vanilla
-        flags the game sets on collection / event trigger.
+        These locations use actors (HeartCo / story-event) whose vanilla
+        flags are checked directly.  No transition tracking is needed:
+        once the flag is set and the location hasn't been sent to the
+        server yet, it will be picked up by the new_locations diff in
+        the update loop.  ``sent_locations`` (populated from the server
+        on connect) prevents duplicate sends.
 
         Also detects the Demise defeat (story flag 959) and sends
         CLIENT_GOAL so the server can release remaining items.
         """
         if not self.memory.connected or not self.memory.base_address:
             return
-
-        if not hasattr(self, '_boss_flags_initializing'):
-            self._boss_flags_initializing = True
-            self._prev_boss_flags: Dict[int, int] = {}  # location_code -> last_state
 
         file_a_offset = OFFSET_SAVEFILE_A
 
@@ -3299,18 +3337,10 @@ class SSHDContext(CommonContext):
                 byte_val = self.memory.read_byte(addr)
                 if byte_val is None:
                     continue
-                flag_state = 1 if (byte_val & mask) else 0
-                prev = self._prev_boss_flags.get(loc_code, 0)
-
-                if self._boss_flags_initializing:
-                    self._prev_boss_flags[loc_code] = flag_state
-                elif flag_state == 1 and prev == 0:
+                if byte_val & mask:
                     self.checked_locations.add(loc_code)
                     logger.info(f"Boss defeat check detected (location {loc_code})")
-                    self._prev_boss_flags[loc_code] = flag_state
                     self.update_tracker_state()
-                else:
-                    self._prev_boss_flags[loc_code] = flag_state
             except Exception as e:
                 logger.debug(f"Error reading boss defeat flag for loc {loc_code}: {e}")
 
@@ -3321,28 +3351,12 @@ class SSHDContext(CommonContext):
                 # Story flag 959: byte 119, bit 7 (mask 0x80)
                 sf_addr = file_a_offset + OFFSET_FA_STORYFLAGS + 119
                 byte_val = self.memory.read_byte(sf_addr)
-                if byte_val is not None:
-                    flag_state = 1 if (byte_val & 0x80) else 0
-                    prev = self._prev_boss_flags.get(DEFEAT_DEMISE_CODE, 0)
-
-                    if self._boss_flags_initializing:
-                        self._prev_boss_flags[DEFEAT_DEMISE_CODE] = flag_state
-                    elif flag_state == 1 and prev == 0:
-                        self.checked_locations.add(DEFEAT_DEMISE_CODE)
-                        logger.info("=== Demise defeated (story flag 959) ===")
-                        self._prev_boss_flags[DEFEAT_DEMISE_CODE] = flag_state
-                        self.update_tracker_state()
-                    else:
-                        self._prev_boss_flags[DEFEAT_DEMISE_CODE] = flag_state
+                if byte_val is not None and (byte_val & 0x80):
+                    self.checked_locations.add(DEFEAT_DEMISE_CODE)
+                    logger.info("=== Demise defeated (story flag 959) ===")
+                    self.update_tracker_state()
             except Exception as e:
                 logger.debug(f"Error reading Demise story flag: {e}")
-
-        # Clear initialization after first full poll
-        if self._boss_flags_initializing:
-            self._boss_flags_initializing = False
-            already = sum(1 for v in self._prev_boss_flags.values() if v == 1)
-            logger.debug(f"[BossInit] Initialized {len(self._prev_boss_flags)} boss/Demise flags "
-                        f"({already} already set)")
 
     async def check_all_locations(self):
         """Check all locations using LocationFlags.py data (Wii addresses - may not work on Switch)."""

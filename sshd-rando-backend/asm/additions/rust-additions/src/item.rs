@@ -349,11 +349,25 @@ pub extern "C" fn handle_crest_hit_give_item(crest_actor: *mut actor::dAcOSwSwor
         };
         (*PLAYER_PTR).obj_base_members.base.pos = position;
 
+        // Read custom flags encoded by patch_goddess_crest():
+        //   index 0 flag: params1 bits 0-9
+        //   index 1 flag: params2 bits 0-9
+        //   index 2 flag: params2 bits 10-19
+        let param1 = (*crest_actor).base.basebase.members.param1;
+        let param2 = (*crest_actor).base.members.base.param2;
+        let custom_flag_0: u16 = (param1 & 0x3FF) as u16;
+        let custom_flag_1: u16 = (param2 & 0x3FF) as u16;
+        let custom_flag_2: u16 = ((param2 >> 10) & 0x3FF) as u16;
+
         // Goddess Sword Reward
         if flag::check_local_sceneflag(50) == 0 {
             let goddess_sword_reward: u8 =
                 ((*crest_actor).base.basebase.members.param1 >> 0x18) as u8;
-            give_item(goddess_sword_reward);
+            if custom_flag_0 != 0x3FF {
+                give_item_with_archipelago_flag(goddess_sword_reward, custom_flag_0);
+            } else {
+                give_item(goddess_sword_reward);
+            }
             flag::set_local_sceneflag(50);
         }
         if (EQUIPPED_SWORD < 2) {
@@ -363,7 +377,11 @@ pub extern "C" fn handle_crest_hit_give_item(crest_actor: *mut actor::dAcOSwSwor
         // Longsword Reward
         if flag::check_local_sceneflag(51) == 0 {
             let longsword_reward: u8 = ((*crest_actor).base.basebase.members.param1 >> 0x10) as u8;
-            give_item(longsword_reward);
+            if custom_flag_1 != 0x3FF {
+                give_item_with_archipelago_flag(longsword_reward, custom_flag_1);
+            } else {
+                give_item(longsword_reward);
+            }
             flag::set_local_sceneflag(51);
         }
         if (EQUIPPED_SWORD < 3) {
@@ -373,7 +391,11 @@ pub extern "C" fn handle_crest_hit_give_item(crest_actor: *mut actor::dAcOSwSwor
         // White Sword Reward
         if flag::check_local_sceneflag(52) == 0 {
             let whitesword_reward: u8 = ((*crest_actor).base.members.base.param2 >> 0x18) as u8;
-            give_item(whitesword_reward);
+            if custom_flag_2 != 0x3FF {
+                give_item_with_archipelago_flag(whitesword_reward, custom_flag_2);
+            } else {
+                give_item(whitesword_reward);
+            }
             flag::set_local_sceneflag(52);
         }
     }
