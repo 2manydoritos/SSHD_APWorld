@@ -170,9 +170,11 @@ class GameItemSystem:
         # FlagMgr pointer-chase state.
         # After discovering the committed flag data location once, we cache
         # the host offset so _ensure_itemflag_set can write there directly.
+        # Invalidated on scene transitions because the committed flag data
+        # lives on the heap and can be reallocated.
         self._guest_to_host_delta: Optional[int] = None
         self._committed_flag_offset: Optional[int] = None  # host offset of committed flag data
-        self._flagmgr_discovery_failed: bool = False
+        self._flagmgr_discovery_retry_at: float = 0.0  # earliest time to retry discovery
         
     def _score_buffer_candidate(self, offset: int, magic_signature: bytes,
                                 cs_addresses: list) -> tuple:
@@ -712,9 +714,13 @@ class GameItemSystem:
                     # would corrupt game memory.
                     self.buffer_addr = None
                     self._buffer_verified = False
+                    # Also invalidate the committed-flag pointer — the
+                    # FlagMgr heap data can move during scene transitions.
+                    self._committed_flag_offset = None
+                    self._guest_to_host_delta = None
                     logger.debug(
                         f"Stage transition detected — cooldown until "
-                        f"{self._stage_cooldown_until:.1f}, buffer cache invalidated"
+                        f"{self._stage_cooldown_until:.1f}, buffer+flag caches invalidated"
                     )
             if time.time() < self._stage_cooldown_until:
                 logger.debug("Player not ready: stage-transition cooldown active")
@@ -779,6 +785,21 @@ class GameItemSystem:
     
     # ---- Direct item-flag reading and writing (guaranteed delivery) --------
 
+    def _invalidate_committed_cache(self):
+        """Reset the cached committed-flag pointer.
+
+        Called on scene transitions (heap may move) and when a validation
+        read fails.  Forces the next ``_ensure_itemflag_set`` call to
+        re-discover the pointer via ``_discover_committed_flags``.
+        """
+        if self._committed_flag_offset is not None:
+            logger.debug(
+                "[FlagMgr] Invalidating cached committed-flag pointer "
+                "(was 0x%X)", self._committed_flag_offset
+            )
+        self._committed_flag_offset = None
+        self._guest_to_host_delta = None
+
     def _discover_committed_flags(self) -> bool:
         """Discover the FlagMgr's committed flag data by chasing pointers.
 
@@ -797,12 +818,17 @@ class GameItemSystem:
         comparing ``FlagSpace.static_flag_ptr`` (a guest address) against
         the known host offset of STATIC_ITEMFLAGS.
 
+        Discovery is retried after a short cooldown on failure (the game
+        may not have fully initialised FlagMgr yet).
+
         Returns True if the committed flag data location was resolved.
         """
-        if self._flagmgr_discovery_failed:
-            return False
         if self._committed_flag_offset is not None:
-            return True  # already discovered
+            return True
+
+        # Respect retry cooldown — avoid hammering every frame.
+        if time.time() < self._flagmgr_discovery_retry_at:
+            return False  # already discovered
 
         if not self.memory or not self.memory.connected:
             return False
@@ -909,11 +935,55 @@ class GameItemSystem:
 
         logger.warning(
             "[FlagMgr] Could not resolve pointer chain (FlagMgr@0x%X). "
-            "Committed flag writes will be skipped.",
+            "Committed flag writes will be skipped this cycle.",
             flagmgr_guest,
         )
-        self._flagmgr_discovery_failed = True
+        # Retry after 5 seconds instead of permanently giving up.
+        # FlagMgr may not be initialised yet during early loading.
+        self._flagmgr_discovery_retry_at = time.time() + 5.0
         return False
+
+    def _validate_committed_pointer(self) -> bool:
+        """Re-validate the cached committed-flag pointer.
+
+        Reads ``FlagSpace.static_flag_ptr`` through the cached delta and
+        verifies it still resolves to ``STATIC_ITEMFLAGS``.  Returns False
+        if the pointer chain has moved (e.g. heap reallocated during a
+        scene transition), signalling that ``_committed_flag_offset`` is
+        stale and must be re-discovered.
+        """
+        if self._committed_flag_offset is None or self._guest_to_host_delta is None:
+            return False
+
+        try:
+            flagmgr_guest = self.memory.read_pointer(GameOffsets.ITEMFLAG_MGR)
+            if not flagmgr_guest or flagmgr_guest < 0x7100000000:
+                return False
+
+            delta = self._guest_to_host_delta
+            flagmgr_host = flagmgr_guest - delta
+            if flagmgr_host < 0 or flagmgr_host > 0xFFFFFFFF:
+                return False
+
+            flagspace_guest = self.memory.read_pointer(
+                flagmgr_host + GameOffsets.FLAGMGR_FLAGS_PTR_OFFSET
+            )
+            if not flagspace_guest or flagspace_guest < 0x7100000000:
+                return False
+
+            flagspace_host = flagspace_guest - delta
+            if flagspace_host < 0 or flagspace_host > 0xFFFFFFFF:
+                return False
+
+            static_ptr_guest = self.memory.read_pointer(
+                flagspace_host + GameOffsets.FLAGSPACE_STATIC_PTR_OFFSET
+            )
+            if not static_ptr_guest:
+                return False
+
+            return (static_ptr_guest - delta) == GameOffsets.STATIC_ITEMFLAGS
+        except Exception:
+            return False
 
     def _check_itemflag(self, item_id: int) -> bool:
         """Read-only check: is the itemflag for this item currently set?
@@ -987,9 +1057,18 @@ class GameItemSystem:
         bases = [GameOffsets.FA_ITEMFLAGS, GameOffsets.STATIC_ITEMFLAGS]
 
         # Try to discover the FlagMgr committed flag data (lazy, cached).
+        # Re-validate the cached pointer by re-reading the FlagSpace to
+        # detect heap reallocation (e.g. after scene transitions).
         self._discover_committed_flags()
         if self._committed_flag_offset is not None:
-            bases.append(self._committed_flag_offset)
+            if self._validate_committed_pointer():
+                bases.append(self._committed_flag_offset)
+            else:
+                # Pointer stale — invalidate and re-discover immediately.
+                self._invalidate_committed_cache()
+                self._discover_committed_flags()
+                if self._committed_flag_offset is not None:
+                    bases.append(self._committed_flag_offset)
 
         for base in bases:
             try:
@@ -1052,7 +1131,13 @@ class GameItemSystem:
         bases = [GameOffsets.FA_ITEMFLAGS, GameOffsets.STATIC_ITEMFLAGS]
         self._discover_committed_flags()
         if self._committed_flag_offset is not None:
-            bases.append(self._committed_flag_offset)
+            if self._validate_committed_pointer():
+                bases.append(self._committed_flag_offset)
+            else:
+                self._invalidate_committed_cache()
+                self._discover_committed_flags()
+                if self._committed_flag_offset is not None:
+                    bases.append(self._committed_flag_offset)
         for base in bases:
             try:
                 current = self.memory.read_short(base + byte_off)
@@ -1105,3 +1190,31 @@ class GameItemSystem:
             self.memory.write_short(buffer_offset, 0)
             self.memory.write_short(buffer_offset + 2, 0)
         logger.info("Cleared Archipelago item buffer")
+
+    def reapply_progressive_flags(
+        self,
+        progressive_counts: dict,
+        tier_flag_table: dict,
+    ) -> None:
+        """Re-write all progressive item flags to all three flag copies.
+
+        Called after scene transitions to guarantee that the committed flag
+        copy (which ``determineFinalItemid`` reads) matches the items the
+        player has actually received.  This closes the race window where
+        a stale committed pointer or a ``copy_flags_from_save`` load could
+        leave committed flags out of date.
+
+        Args:
+            progressive_counts: ``{"Progressive Sword": 3, ...}`` — the
+                number of each progressive item received so far.
+            tier_flag_table: ``{"Progressive Sword": [10,11,12,9,13,14], ...}``
+                — ordered game-flag IDs for each progressive tier.
+        """
+        for prog_name, count in progressive_counts.items():
+            if count <= 0:
+                continue
+            tier_ids = tier_flag_table.get(prog_name)
+            if not tier_ids:
+                continue
+            for t in range(min(count, len(tier_ids))):
+                self._ensure_itemflag_set(tier_ids[t])

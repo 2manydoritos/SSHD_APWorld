@@ -1402,6 +1402,7 @@ class SSHDContext(CommonContext):
         self._scene_transition_cooldown_until: float = 0.0
         self._SCENE_TRANSITION_COOLDOWN_SECS: float = 4.0
         self._last_next_stage: Optional[str] = None  # For early transition detection via NEXT_STAGE
+        self._progressive_flags_dirty: bool = False  # Set True on scene transition; triggers flag re-apply
         
         # BreathLink state tracking
         self.last_breath_link: float = 0.0      # For BreathLink echo prevention
@@ -2241,6 +2242,13 @@ class SSHDContext(CommonContext):
                 self._scene_transition_cooldown_until = (
                     time.time() + self._SCENE_TRANSITION_COOLDOWN_SECS
                 )
+                self._progressive_flags_dirty = True
+
+                # Invalidate the GameItemSystem's committed-flag pointer
+                # cache — heap addresses can move during scene transitions.
+                if self.game_item_system:
+                    self.game_item_system._invalidate_committed_cache()
+
                 logger.debug(
                     f"Scene transition cooldown active until "
                     f"{self._scene_transition_cooldown_until:.1f}"
@@ -2268,6 +2276,19 @@ class SSHDContext(CommonContext):
                 # Write AP buffers to game memory (item info table + check stats)
                 self._write_ap_item_info_table()
                 self._update_ap_check_stats()
+
+                # After a scene transition the game reloads flag data from
+                # the save file and commits it, so the committed copy that
+                # determineFinalItemid reads may be stale.  Re-apply all
+                # progressive tier flags to all three flag copies to ensure
+                # the next local progressive pickup resolves correctly.
+                if self._progressive_flags_dirty and self.game_item_system:
+                    self._progressive_flags_dirty = False
+                    self.game_item_system.reapply_progressive_flags(
+                        self.progressive_counts,
+                        self._PROGRESSIVE_TIER_FLAGS,
+                    )
+                    logger.debug("[SceneTransition] Re-applied progressive flags to committed memory")
             
             # Process deferred progressive-item flag writes
             self._process_deferred_flag_writes()
