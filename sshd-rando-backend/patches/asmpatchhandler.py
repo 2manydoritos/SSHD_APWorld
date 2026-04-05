@@ -570,6 +570,7 @@ class ASMPatchHandler:
 
         skip_harp_playing = world.setting("skip_harp_playing").value_index()
         cutoff_game_over_music = world.setting("cutoff_game_over_music").value_index()
+        archipelago_item_model = world.setting("archipelago_item_model").value_index()
 
         sky_keep_goal = world.get_dungeon("Sky Keep").goal_location
         if sky_keep_goal == None:
@@ -592,7 +593,7 @@ class ASMPatchHandler:
                 skip_harp_playing,
                 sky_keep_beaten_sceneflag,
                 cutoff_game_over_music,
-                0xFF,
+                archipelago_item_model,
             ],  # RANDOMIZER_SETTINGS
             0x712E5FF020: [
                 0xFF,

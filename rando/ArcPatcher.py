@@ -154,3 +154,86 @@ def patch_archipelago_logo(romfs_output_path: Path, assets_path: Path, title2d_s
         print(f"  ✓ Credits logo patched: {layout_output / 'EndRoll.arc'}")
     else:
         print(f"Warning: EndRoll source not found at {endroll_source}")
+
+
+def _load_oarc_asset(oarc_filename: str, assets_path: Path) -> bytes | None:
+    """Load an OARC asset file from ZIP package, pkgutil, or filesystem."""
+    import pkgutil
+    import importlib.resources
+
+    oarc_data = None
+
+    # Try method 1: importlib.resources (ZIP packages)
+    try:
+        if hasattr(importlib.resources, 'files'):
+            assets = importlib.resources.files('worlds.sshd').joinpath('assets')
+            oarc_data = assets.joinpath(oarc_filename).read_bytes()
+            print(f"[ArcPatcher] Loaded {oarc_filename} from ZIP package")
+    except Exception:
+        pass
+
+    # Try method 2: pkgutil.get_data (fallback)
+    if oarc_data is None:
+        try:
+            oarc_data = pkgutil.get_data("worlds.sshd.assets", oarc_filename)
+            if oarc_data:
+                print(f"[ArcPatcher] Loaded {oarc_filename} via pkgutil")
+        except Exception:
+            pass
+
+    # Try method 3: filesystem (development)
+    if oarc_data is None:
+        try:
+            oarc_path = assets_path / oarc_filename
+            if oarc_path.exists():
+                oarc_data = oarc_path.read_bytes()
+                print(f"[ArcPatcher] Loaded {oarc_filename} from filesystem: {oarc_path}")
+        except Exception:
+            pass
+
+    return oarc_data
+
+
+def patch_archipelago_item_oarc(romfs_output_path: Path, assets_path: Path, model_setting: str = "archipelago_logo"):
+    """
+    Place the custom ArchipelagoItem OARC(s) into the cache/oarc folder
+    so the existing arc patching pipeline picks it up and writes it
+    to romfs/Object/NX/ automatically.
+
+    model_setting: "letter", "archipelago_logo", or "unofficial_archipelago_logo"
+    """
+    if model_setting == "letter":
+        # Letter mode uses GetKobunALetter which is already extracted from the game
+        print("[ArcPatcher] Using Letter model — no custom OARC needed")
+        return
+
+    try:
+        from sslib.utils import write_bytes_create_dirs
+        from filepathconstants import CACHE_OARC_PATH
+        import nlzss11
+    except ImportError as e:
+        print(f"Warning: sshd-rando not available, skipping item OARC patch (import error: {e})")
+        return
+
+    # Always load BOTH custom OARCs into cache — the stage patcher adds both
+    # to every stage's object list, and the game selects the right one at
+    # runtime based on archipelago_item_model in RANDOMIZER_SETTINGS.
+    arcs_to_load = [
+        ("ArchipelagoItem.arc.LZ", "ArchipelagoItem.arc"),
+        ("ArchipelagoItem2.arc.LZ", "ArchipelagoItem2.arc"),
+    ]
+
+    for oarc_filename, cache_name in arcs_to_load:
+        oarc_data = _load_oarc_asset(oarc_filename, assets_path)
+
+        if oarc_data is None:
+            print(f"Warning: {oarc_filename} not found in assets, skipping custom item model")
+            continue
+
+        # Decompress the LZ data to get the raw .arc for the cache
+        decompressed = nlzss11.decompress(oarc_data)
+
+        # Write to cache/oarc/ so patch_object_folder() picks it up
+        cache_arc_path = CACHE_OARC_PATH / cache_name
+        write_bytes_create_dirs(cache_arc_path, decompressed)
+        print(f"  ✓ Custom {cache_name} placed in cache: {cache_arc_path}")

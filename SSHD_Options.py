@@ -1270,6 +1270,20 @@ class UseAlternativeLogo(Toggle):
     display_name = "Use Alternative Logo"
 
 
+class ArchipelagoItemModel(Choice):
+    """
+    Controls which 3D model is used for items from other Archipelago worlds.
+    - Letter: Uses the vanilla Cawlin's Letter model.
+    - Archipelago Logo: Uses a custom Archipelago logo model.
+    - Unofficial Archipelago Logo: Uses a custom unofficial Archipelago logo model.
+    """
+    display_name = "Archipelago Item Model"
+    option_letter = 0
+    option_archipelago_logo = 1
+    option_unofficial_archipelago_logo = 2
+    default = 1
+
+
 # === Extra Starting Inventory ===
 
 class StartingHearts(Range):
@@ -1637,6 +1651,7 @@ class SSHDOptions(PerGameCommonOptions):
     starry_skies: StarrySky
     remove_enemy_music: RemoveEnemyMusic
     use_alternative_logo: UseAlternativeLogo
+    archipelago_item_model: ArchipelagoItemModel
     
     # Extra Starting Inventory
     starting_hearts: StartingHearts

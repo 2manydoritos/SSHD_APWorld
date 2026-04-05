@@ -79,6 +79,13 @@ Skyward Sword HD:
   use_alternative_logo: false
 
 
+  # Use Alternate Item Model
+  # 0: Letter
+  # 1: Archipelago Logo
+  # 2: Unofficial Archipelago Logo
+  archipelago_item_model: 2
+
+
 
   # ========================================
   # CHEATS

@@ -2021,3 +2021,16 @@
   options:
     - "off": "You will start the game without any treasures in your inventory."
     - "on": "You will start the game with 99 of each treasure in your inventory."
+
+- name: archipelago_item_model
+  default_option: "archipelago_logo"
+  pretty_name: Archipelago Item Model
+  type: Cosmetic
+  pretty_options:
+    - "Letter"
+    - "Archipelago Logo"
+    - "Unofficial Archipelago Logo"
+  options:
+    - "letter": "Uses the vanilla Cawlin's Letter model for items from other Archipelago worlds."
+    - "archipelago_logo": "Uses a custom Archipelago logo model for items from other Archipelago worlds."
+    - "unofficial_archipelago_logo": "Uses a custom unofficial Archipelago logo model for items from other Archipelago worlds."

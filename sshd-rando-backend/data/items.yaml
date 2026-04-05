@@ -1434,9 +1434,9 @@
   name: Archipelago Item
   types:
     - Major Items
-  oarc: GetKobunALetter
-  shop_arc_name: GetKobunALetter
-  shop_model_name: GetKobunALetter
+  oarc: ArchipelagoItem
+  shop_arc_name: ArchipelagoItem
+  shop_model_name: ArchipelagoItem
   advancement: false
 
 # - id: 240+ == traps

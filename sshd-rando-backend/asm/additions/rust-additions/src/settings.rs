@@ -25,8 +25,10 @@ pub struct RandomizerSettings {
     pub skip_harp_playing:         u8,
     pub sky_keep_beaten_sceneflag: i8,
     pub cutoff_game_over_music:    u8,
+    pub archipelago_item_model:    u8, /* 0=letter, 1=archipelago_logo,
+                                        * 2=unofficial_archipelago_logo */
 }
-assert_eq_size!([u8; 0x3], RandomizerSettings);
+assert_eq_size!([u8; 0x4], RandomizerSettings);
 
 // IMPORTANT: when using vanilla code, the start point must be declared in
 // symbols.yaml and then added to this extern block.

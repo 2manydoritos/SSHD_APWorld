@@ -43,7 +43,7 @@ from .Items import ITEM_TABLE
 from .Locations import LOCATION_TABLE
 from .SSHD_Options import SSHDOptions
 from .Rules import set_rules, set_completion_condition
-from .rando.ArcPatcher import patch_archipelago_logo
+from .rando.ArcPatcher import patch_archipelago_logo, patch_archipelago_item_oarc
 from .SSHDRWrapper import generate_sshd_rando_mod, extract_location_item_mapping, extract_custom_flag_mapping
 
 try:
@@ -457,6 +457,7 @@ class SSHDWorld(World):
         # Music
         "randomize_music": ("music_randomization", "choice", {"vanilla": 0, "shuffle_music": 1, "shuffle_music_limit_vanilla": 2}),
         "cutoff_game_over_music": ("cutoff_game_over_music", "toggle", None),
+        "archipelago_item_model": ("archipelago_item_model", "choice", {"letter": 0, "archipelago_logo": 1, "unofficial_archipelago_logo": 2}),
         # Advanced Randomization
         "enable_back_in_time": ("enable_back_in_time", "toggle", None),
         "underground_rupee_shuffle": ("underground_rupee_shuffle", "toggle", None),
@@ -2606,6 +2607,19 @@ class SSHDWorld(World):
             romfs_path = None
             exefs_path = None
             
+            # Determine if the user explicitly provided a valid extract path.
+            # If so, we MUST generate complete patches — silent fallback to
+            # lightweight (patcher_data.json only) is not acceptable.
+            user_extract_path = self.options.extract_path.value
+            has_valid_extract = False
+            if user_extract_path:
+                _ep = Path(user_extract_path)
+                if (_ep / "romfs").exists() and (_ep / "exefs").exists():
+                    has_valid_extract = True
+                    print(f"[__init__.py] Valid extract path detected: {user_extract_path}")
+                else:
+                    print(f"[__init__.py] WARNING: extract_path is set but romfs/exefs not found at: {user_extract_path}")
+            
             if SSHD_RANDO_AVAILABLE:
                 try:
                     print("[__init__.py] Generating sshd-rando patches...")
@@ -2619,9 +2633,19 @@ class SSHDWorld(World):
                         # Patch logos with Archipelago branding
                         self._patch_archipelago_logos(romfs_path)
                     else:
+                        if has_valid_extract:
+                            raise Exception(
+                                f"sshd-rando patch generation returned no paths, but extract_path "
+                                f"'{user_extract_path}' is set and valid. Check logs above for errors."
+                            )
                         print(f"[__init__.py] WARNING: sshd-rando generation returned no paths")
                         
                 except FileNotFoundError as e:
+                    if has_valid_extract:
+                        raise Exception(
+                            f"File not found during patch generation despite valid extract_path "
+                            f"'{user_extract_path}': {e}"
+                        ) from e
                     # Specific handling for missing extract files
                     error_msg = str(e)
                     if "sshd_extract" in error_msg or "ObjectPack.arc.LZ" in error_msg or "romfs" in error_msg:
@@ -2651,12 +2675,24 @@ class SSHDWorld(World):
                         print("\nPatch file will only contain item/location mappings")
                         
                 except Exception as e:
+                    if has_valid_extract:
+                        raise Exception(
+                            f"Patch generation failed despite valid extract_path "
+                            f"'{user_extract_path}': {e}"
+                        ) from e
                     import traceback
                     print(f"\nERROR: Could not generate sshd-rando patches:")
                     print(f"Exception: {e}")
                     print(f"\nFull traceback:")
                     traceback.print_exc()
                     print("\nPatch file will only contain item/location mappings")
+            elif has_valid_extract:
+                raise Exception(
+                    f"extract_path '{user_extract_path}' is set and valid, but sshd-rando-backend "
+                    f"is not available. Cannot generate complete patches. Ensure the .apworld "
+                    f"includes sshd-rando-backend or that the sshd-rando-backend/ directory "
+                    f"exists alongside __init__.py."
+                )
             else:
                 print(f"Warning: sshd-rando-backend not available")
                 print("Patch file will only contain item/location mappings")
@@ -2821,6 +2857,11 @@ class SSHDWorld(World):
                 import sys
                 from patches.allpatchhandler import AllPatchHandler
                 from util.text import load_text_data
+                
+                # Place custom ArchipelagoItem OARC into cache before patches run
+                assets_path = Path(__file__).parent / "assets"
+                model_setting = ap_settings.get("archipelago_item_model", "archipelago_logo")
+                patch_archipelago_item_oarc(None, assets_path, model_setting)
                 # Serialize patch generation: sshd-rando uses module-level global
                 # state (text_table) that is not thread-safe. Archipelago runs
                 # generate_output in parallel threads, so we must hold a lock
@@ -3089,6 +3130,10 @@ class SSHDWorld(World):
             
             print("[__init__.py] Applied overrides: skip_demise=off, all hints disabled, spawn_hearts=on, progressive_items=on")
             
+            # AP-only settings that don't exist in config.yaml — always read from AP options
+            item_model_map = {0: "letter", 1: "archipelago_logo", 2: "unofficial_archipelago_logo"}
+            settings_dict["archipelago_item_model"] = item_model_map.get(self.options.archipelago_item_model.value, "archipelago_logo")
+            
             return settings_dict
         
         # Fall back to Archipelago options if config.yaml doesn't exist or is empty
@@ -3293,6 +3338,9 @@ class SSHDWorld(World):
         damage_map = {0: "0", 1: "1", 2: "2", 3: "4", 4: "80"}
         settings_dict["damage_multiplier"] = damage_map[self.options.damage_multiplier.value]
         settings_dict["spawn_hearts"] = "on"
+
+        item_model_map = {0: "letter", 1: "archipelago_logo", 2: "unofficial_archipelago_logo"}
+        settings_dict["archipelago_item_model"] = item_model_map.get(self.options.archipelago_item_model.value, "archipelago_logo")
 
         # === Cheat overrides ===
         # Infinite Health: force damage_multiplier to 0 (invincible)

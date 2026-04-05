@@ -1012,8 +1012,10 @@ pub extern "C" fn fix_freestanding_item_y_offset(item_actor: *mut dAcItem) {
                 50 | 131 | 137 | 177 | 207..=213 => y_offset = 19.0,
                 // Earrings
                 138 => y_offset = 6.0,
-                // Letter | Monster Horn | Archipelago Item
-                158 | 171 | 216 => y_offset = 12.0,
+                // Letter | Monster Horn
+                158 | 171 => y_offset = 12.0,
+                // Archipelago Item (Letter model uses smaller offset, custom models float higher)
+                216 => y_offset = if RANDOMIZER_SETTINGS.archipelago_item_model == 0 { 12.0 } else { 30.0 },
                 // Rattle
                 160 => {
                     y_offset = 5.0;
@@ -1373,7 +1375,13 @@ pub extern "C" fn resolve_progressive_item_models(
             model_name = match item_id {
                 214 => c"Onp".as_ptr(),
                 215 => c"DesertRobot".as_ptr(),
-                216 => c"GetKobunALetter".as_ptr(),
+                216 => {
+                    match RANDOMIZER_SETTINGS.archipelago_item_model {
+                        0 => c"GetKobunALetter".as_ptr(),
+                        2 => c"ArchipelagoItem2".as_ptr(),
+                        _ => c"ArchipelagoItem".as_ptr(),
+                    }
+                },
                 _ => model_name,
             };
 
@@ -1391,7 +1399,14 @@ pub extern "C" fn resolve_progressive_item_models(
                 214 if (s_rng & 1) == 0 => c"OnpA".as_ptr(),
                 214 => c"OnpB".as_ptr(),
                 215 => c"DesertRobot".as_ptr(),
-                216 => c"GetKobunALetter".as_ptr(),
+                216 => {
+                    match RANDOMIZER_SETTINGS.archipelago_item_model {
+                        0 => c"GetKobunALetter".as_ptr(),
+                        // Model name inside the BRRES is always "ArchipelagoItem"
+                        // regardless of which arc (ArchipelagoItem or ArchipelagoItem2)
+                        _ => c"ArchipelagoItem".as_ptr(),
+                    }
+                },
                 _ => model_name,
             };
 
