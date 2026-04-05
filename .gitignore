@@ -11,6 +11,7 @@ build.log
 dist/
 build/
 release/
+output/
 logs/
 cache/
 *.exe
