@@ -699,7 +699,7 @@ class RyujinxMemoryReader:
                     try:
                         raw = self.pm.read_bytes(eqsw_addr, 1)
                         eqsw_val = raw[0] if raw else '?'
-                        logger.info(f"[EQSW] EQUIPPED_SWORD at startup = {eqsw_val} (addr 0x{eqsw_addr:x})")
+                        logger.debug(f"[EQSW] EQUIPPED_SWORD at startup = {eqsw_val} (addr 0x{eqsw_addr:x})")
                     except Exception as re:
                         logger.info(f"[EQSW] read failed: {re}")
                 except Exception as e:
